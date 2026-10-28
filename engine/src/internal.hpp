@@ -83,7 +83,9 @@ struct FramingPrior {
 	double minExtent = 0.2, maxExtent = 0.9, centreShare = 0.8;
 };
 
-PoseFit positionWide (const Intrinsics& K, const M3& R, const Segments& segs, int width, int height, const FramingPrior& prior);
+// starts / joint: distinct starts refined, of them jointly refined with a rotation (8, 3; fewer for a quick ranking)
+PoseFit positionWide (const Intrinsics& K, const M3& R, const Segments& segs, int width, int height, const FramingPrior& prior,
+	int starts = 8, int joint = 3);
 // a tracked frame: joint refinement from a prior pose (and the ±1 cubie shift check)
 PoseFit positionLocal (const Intrinsics& K, const M3& R, V3 t, const Segments& segs);
 

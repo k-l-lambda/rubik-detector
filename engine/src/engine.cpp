@@ -66,7 +66,7 @@ struct Solve {
 	double support = 0;
 };
 
-Solve solveFor (const Segments& base, const Intrinsics& K, int W, int H, const DetectOptions& options) {
+Solve solveFor (const Segments& base, const Intrinsics& K, int W, int H, const DetectOptions& options, int starts = 8, int joint = 3) {
 	Solve out;
 	out.segs = base;
 	Segments& segs = out.segs;
@@ -116,7 +116,7 @@ Solve solveFor (const Segments& base, const Intrinsics& K, int W, int H, const D
 	}
 	t0 = std::chrono::steady_clock::now();
 	FramingPrior framing{options.minExtent, options.maxExtent, options.centreShare};
-	out.fit = options.search == Search::Wide ? positionWide(K, R, segs, W, H, framing) : positionLocal(K, R, t, segs);
+	out.fit = options.search == Search::Wide ? positionWide(K, R, segs, W, H, framing, starts, joint) : positionLocal(K, R, t, segs);
 	out.msPosition = ms(t0);
 	double all = 0, fam = 0;
 	for (size_t i = 0; i < segs.w.size(); i++) {
@@ -131,116 +131,207 @@ Solve solveFor (const Segments& base, const Intrinsics& K, int W, int H, const D
 
 }
 
-ViewResult Detector::detect (const Image& image, const Camera& camera, const DetectOptions& options) {
-	ViewResult out;
+namespace {
+
+// an image at a working width, up to its segments (camera independent)
+struct Prepared {
+	bool ok = false;
+	std::string error;
+	double s = 1;          // working px per input px
+	int W = 0, H = 0;
+	LabImage lab;
+	Segments segs;
+	double msSegments = 0;
+};
+
+Prepared prepare (const Image& image, int workWidth, Gray8 planes[3]) {
+	Prepared p;
 	if (!validImage(image)) {
-		out.error = "bad image";
-		return out;
+		p.error = "bad image";
+		return p;
 	}
 	auto t0 = std::chrono::steady_clock::now();
-	workingPlanes(image, options.workWidth, scratch->planes);
-	const double s = double(scratch->planes[0].width) / image.width;
-	const int W = scratch->planes[0].width, H = scratch->planes[0].height;
-	LabImage lab = toLab(scratch->planes);
-	Segments base = detectSegments(toGray(scratch->planes), lab, scratch->planes);
-	out.segmentCount = int(base.s.size());
-	out.timings.segments = ms(t0);
-	if (base.s.size() < 12) {
-		out.error = std::to_string(base.s.size()) + " segments";
+	workingPlanes(image, workWidth, planes);
+	p.s = double(planes[0].width) / image.width;
+	p.W = planes[0].width;
+	p.H = planes[0].height;
+	p.lab = toLab(planes);
+	p.segs = detectSegments(toGray(planes), p.lab, planes);
+	p.msSegments = ms(t0);
+	if (p.segs.s.size() < 12) {
+		p.error = std::to_string(p.segs.s.size()) + " segments";
+		return p;
+	}
+	p.ok = true;
+	return p;
+}
+
+Camera completed (Camera c, const Image& image) {
+	if (!(c.cx > 0) || !(c.cy > 0)) {
+		c.cx = image.width / 2.0;
+		c.cy = image.height / 2.0;
+	}
+	if (!(c.fy > 0))
+		c.fy = c.fx;
+	return c;
+}
+
+}
+
+ViewResult Detector::detect (const Image& image, const Camera& camera, const DetectOptions& options) {
+	ViewResult out;
+	if (!(camera.fx > 0)) {
+		out.error = "unknown focal length: estimate it first (Detector::estimateFocal)";
 		return out;
 	}
-
-	// the camera: as given, or (fx <= 0) the focal length whose lattice fit explains the most segment weight. Square pixels, the principal point
-	// at the image centre unless given. Coarse: FOCAL_STEPS log-spaced fx / long side in [focalMin, focalMax];
-	// then golden-section on log fx between the best one's neighbours.
-	Camera cam = camera;
-	if (!(cam.cx > 0) || !(cam.cy > 0)) {
-		cam.cx = image.width / 2.0;
-		cam.cy = image.height / 2.0;
+	Prepared p = prepare(image, options.workWidth, scratch->planes);
+	out.segmentCount = int(p.segs.s.size());
+	out.timings.segments = p.msSegments;
+	if (!p.ok) {
+		out.error = p.error;
+		return out;
 	}
-	Solve best;
-	if (cam.fx > 0) {
-		if (!(cam.fy > 0))
-			cam.fy = cam.fx;
-		best = solveFor(base, scaled(cam, s), W, H, options);
-	}
-	else {
-		const double L = std::max(image.width, image.height);
-		auto at = [&](double logRatio) {
-			Camera c = cam;
-			c.fx = c.fy = std::exp(logRatio) * L;
-			Solve r = solveFor(base, scaled(c, s), W, H, options);
-			out.timings.axes += r.msAxes;
-			out.timings.position += r.msPosition;
-			out.focalTried++;
-			return std::make_pair(r.ok ? 1 - r.support : 2.0, r);   // minimized
-		};
-		const int steps = std::max(3, options.focalSteps);
-		const double lo = std::log(options.focalMin), hi = std::log(options.focalMax), step = (hi - lo) / (steps - 1);
-		std::vector<double> costs(steps);
-		std::vector<Solve> solves(steps);
-		for (int i = 0; i < steps; i++) {
-			auto r = at(lo + i * step);
-			costs[i] = r.first;
-			solves[i] = std::move(r.second);
-		}
-		int i = int(std::min_element(costs.begin(), costs.end()) - costs.begin());
-		double a = lo + std::max(i - 1, 0) * step, b = lo + std::min(i + 1, steps - 1) * step;
-		double bestCost = costs[i], bestLog = lo + i * step;
-		best = std::move(solves[i]);
-		const double g = 0.6180339887498949;
-		double x1 = b - g * (b - a), x2 = a + g * (b - a);
-		auto f1 = at(x1), f2 = at(x2);
-		for (int it = 0; it < options.focalRefine; it++) {
-			if (f1.first < f2.first) {
-				b = x2;
-				x2 = x1;
-				f2 = std::move(f1);
-				x1 = b - g * (b - a);
-				f1 = at(x1);
-			}
-			else {
-				a = x1;
-				x1 = x2;
-				f1 = std::move(f2);
-				x2 = a + g * (b - a);
-				f2 = at(x2);
-			}
-		}
-		for (auto* f : {&f1, &f2}) {
-			double x = f == &f1 ? x1 : x2;
-			if (f->first < bestCost) {
-				bestCost = f->first;
-				bestLog = x;
-				best = std::move(f->second);
-			}
-		}
-		cam.fx = cam.fy = std::exp(bestLog) * L;
-		out.focalEstimated = true;
-	}
+	const Camera cam = completed(camera, image);
+	const Intrinsics K = scaled(cam, p.s);
+	Solve best = solveFor(p.segs, K, p.W, p.H, options);
 	out.camera = cam;
 	out.familySegments = best.familySegments;
-	if (camera.fx > 0) {
-		out.timings.axes = best.msAxes;
-		out.timings.position = best.msPosition;
-	}
+	out.timings.axes = best.msAxes;
+	out.timings.position = best.msPosition;
+	out.support = best.support;
 	if (!best.ok) {
 		out.error = best.error;
 		return out;
 	}
-	const Intrinsics K = scaled(cam, s);
 	const PoseFit& fit = best.fit;
-	t0 = std::chrono::steady_clock::now();
-	out.samples = sampleAt(lab, K, fit.R, fit.t, options.sampleSize, s);
+	auto t0 = std::chrono::steady_clock::now();
+	out.samples = sampleAt(p.lab, K, fit.R, fit.t, options.sampleSize, p.s);
 	out.timings.sampling = ms(t0);
 	std::copy(fit.R.begin(), fit.R.end(), out.pose.R.begin());
 	out.pose.t = {fit.t.x, fit.t.y, fit.t.z};
 	out.latticeCost = fit.cost;
 	if (options.keepSegments)
 		for (size_t i = 0; i < best.segs.s.size(); i++)
-			out.segments.push_back({float(best.segs.s[i][0] / s), float(best.segs.s[i][1] / s), float(best.segs.s[i][2] / s), float(best.segs.s[i][3] / s),
-				float(best.segs.w[i]), best.segs.family[i]});
+			out.segments.push_back({float(best.segs.s[i][0] / p.s), float(best.segs.s[i][1] / p.s), float(best.segs.s[i][2] / p.s),
+				float(best.segs.s[i][3] / p.s), float(best.segs.w[i]), best.segs.family[i]});
 	out.ok = true;
+	return out;
+}
+
+FocalEstimate Detector::estimateFocal (const std::vector<Image>& images, const Camera& hint, const FocalOptions& options) {
+	FocalEstimate out;
+	auto t0 = std::chrono::steady_clock::now();
+	if (images.empty()) {
+		out.error = "no image";
+		return out;
+	}
+	for (const Image& im : images)
+		if (im.width != images[0].width || im.height != images[0].height) {
+			out.error = "the images must have one size (one camera)";
+			return out;
+		}
+	const Image& first = images[0];
+	const double L = std::max(first.width, first.height);
+	DetectOptions solveOptions;
+	solveOptions.seed = options.seed;
+	solveOptions.minExtent = options.minExtent;
+	solveOptions.maxExtent = options.maxExtent;
+	solveOptions.centreShare = options.centreShare;
+	auto cameraAt = [&](double logRatio) {
+		Camera c = hint;
+		c.fx = std::exp(logRatio) * L;
+		c.fy = 0;
+		return completed(c, first);
+	};
+	// coarse: the whole range, log-spaced, at the coarse width, each a quick wide solve (3 starts, 1 joint refinement:
+	// enough to rank the focal lengths); its pose per image is kept as the fine stage's prior
+	std::vector<Prepared> coarse;
+	for (const Image& im : images)
+		coarse.push_back(prepare(im, options.coarseWidth, scratch->planes));
+	if (std::none_of(coarse.begin(), coarse.end(), [](const Prepared& p) { return p.ok; })) {
+		out.error = coarse[0].error;
+		return out;
+	}
+	const int steps = std::max(3, options.coarseSteps);
+	const double lo = std::log(options.focalMin), hi = std::log(options.focalMax), step = (hi - lo) / (steps - 1);
+	int bestI = -1;
+	double bestV = 1e300;
+	std::vector<std::pair<bool, PoseFit>> priors(images.size(), {false, {}});
+	for (int i = 0; i < steps; i++) {
+		double x = lo + i * step, total = 0;
+		std::vector<std::pair<bool, PoseFit>> poses(images.size(), {false, {}});
+		for (size_t j = 0; j < coarse.size(); j++) {
+			if (!coarse[j].ok) {
+				total += 1;
+				continue;
+			}
+			Solve r = solveFor(coarse[j].segs, scaled(cameraAt(x), coarse[j].s), coarse[j].W, coarse[j].H, solveOptions, 3, 1);
+			out.solves++;
+			total += r.ok ? 1 - r.support : 1;
+			poses[j] = {r.ok, r.fit};
+		}
+		double v = total / coarse.size();
+		out.curve.push_back({std::exp(x), 1 - v});
+		if (v < bestV) {
+			bestV = v;
+			bestI = i;
+			priors = poses;
+		}
+	}
+	coarse.clear();
+	const double xBest = lo + bestI * step;
+
+	// fine: golden section at the working width between the coarse best's neighbours, each a local solve from the
+	// coarse pose; at focal k·f the same projection is the centre (x, y, k·z)
+	std::vector<Prepared> fine;
+	for (const Image& im : images)
+		fine.push_back(prepare(im, options.workWidth, scratch->planes));
+	auto objective = [&](double x) {
+		double total = 0;
+		for (size_t j = 0; j < fine.size(); j++) {
+			if (!fine[j].ok || !priors[j].first) {
+				total += 1;
+				continue;
+			}
+			DetectOptions local = solveOptions;
+			local.search = Search::Local;
+			const PoseFit& p = priors[j].second;
+			std::copy(p.R.begin(), p.R.end(), local.prior.R.begin());
+			local.prior.t = {p.t.x, p.t.y, p.t.z * std::exp(x - xBest)};
+			Solve r = solveFor(fine[j].segs, scaled(cameraAt(x), fine[j].s), fine[j].W, fine[j].H, local);
+			out.solves++;
+			total += r.ok ? 1 - r.support : 1;
+		}
+		return total / fine.size();
+	};
+	double a = lo + std::max(bestI - 1, 0) * step, b = lo + std::min(bestI + 1, steps - 1) * step;
+	const double g = 0.6180339887498949;
+	double x1 = b - g * (b - a), x2 = a + g * (b - a);
+	double f1 = objective(x1), f2 = objective(x2);
+	for (int it = 0; it < options.refineSteps; it++) {
+		if (f1 < f2) {
+			b = x2;
+			x2 = x1;
+			f2 = f1;
+			x1 = b - g * (b - a);
+			f1 = objective(x1);
+		}
+		else {
+			a = x1;
+			x1 = x2;
+			f1 = f2;
+			x2 = a + g * (b - a);
+			f2 = objective(x2);
+		}
+	}
+	double x = f1 < f2 ? x1 : x2;
+	out.support = 1 - std::min(f1, f2);
+	out.camera = cameraAt(x);
+	out.ratio = std::exp(x);
+	out.ms = ms(t0);
+	out.ok = out.support > 0;
+	if (!out.ok)
+		out.error = "no lattice fit at any focal length";
 	return out;
 }
 

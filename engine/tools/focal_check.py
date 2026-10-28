@@ -1,6 +1,6 @@
-"""Focal length estimation (Camera fx <= 0) on samples whose true K is known: per view the estimated fx / true fx,
-the sticker centre error vs truth with the estimated camera, and per group the state from three views each
-estimated on its own.
+"""Detector::estimateFocal on samples whose true K is known: fx error estimated from each view alone and from the
+three views of a group together (one camera); with the joint estimate, the sticker centre error vs truth and the
+group's state.
 
 	python engine/tools/focal_check.py [--set g,n] [--kinds render,bg,hand] [--limit 20] [--jobs 12]
 """
@@ -17,23 +17,25 @@ from rubik_detector import data, pipeline  # noqa: E402
 
 
 def job(args):
-	group, kind = args
+	group, kind, coarse_width = args
 	import rubik_engine as re
 	s = data.load(group, kind, include_failed=True)
 	if s is None:
 		return None
 	det = re.Detector()
 	out = {"group": group, "kind": kind, "views": []}
-	views = []
+	# per view on its own, and the three views together (one camera)
 	for view in s.views:
-		t0 = time.perf_counter()
-		r = det.detect(view.image, None, work_width=0)
-		ms = (time.perf_counter() - t0) * 1000
-		rec = {"ok": r["ok"], "ratio": r["camera"][0] / view.K[0, 0], "ms": ms, "tried": r["focal_tried"]}
-		if r["ok"]:
-			rec["err"] = pipeline.geometry_error({q["facelet"]: q["quad"] for q in r["samples"]}, view.quads)["max"]
-		out["views"].append(rec)
+		f = det.estimate_focal([view.image], coarse_width=coarse_width, work_width=view.image.shape[1])
+		out["views"].append({"ok": f["ok"], "ratio": f["camera"][0] / view.K[0, 0], "ms": f["ms"], "solves": f["solves"]})
+	f = det.estimate_focal([v.image for v in s.views], coarse_width=coarse_width, work_width=s.views[0].image.shape[1])
+	out["group_ratio"], out["group_ms"] = f["camera"][0] / s.views[0].K[0, 0], f["ms"]
+	K = np.array([[f["camera"][0], 0, f["camera"][2]], [0, f["camera"][1], f["camera"][3]], [0, 0, 1]])
+	views = []
+	for v, view in enumerate(s.views):
+		r = det.detect(view.image, K, work_width=0)
 		views.append(r)
+		out["views"][v]["err"] = pipeline.geometry_error({q["facelet"]: q["quad"] for q in r["samples"]}, view.quads)["max"] if r["ok"] else 99
 	if all(v["ok"] for v in views):
 		e = re.estimate(views)
 		out["wrong"] = re.compare_states(e["state"], s.state) if e["ok"] else None
@@ -46,26 +48,25 @@ def main():
 	ap.add_argument("--kinds", default="render,bg,hand")
 	ap.add_argument("--limit", type=int, default=20)
 	ap.add_argument("--jobs", type=int, default=12)
+	ap.add_argument("--coarse-width", type=int, default=512)
 	a = ap.parse_args()
-	jobs = [(g, k) for s in a.set.split(",") for g in data.groups(s)[:a.limit] for k in a.kinds.split(",")]
+	jobs = [(g, k, a.coarse_width) for s in a.set.split(",") for g in data.groups(s)[:a.limit] for k in a.kinds.split(",")]
 	t0 = time.time()
 	with ProcessPoolExecutor(a.jobs) as ex:
 		rows = [r for r in ex.map(job, jobs) if r]
+	print(f"coarse width {a.coarse_width}")
 	for kind in a.kinds.split(","):
 		rs = [r for r in rows if r["kind"] == kind]
 		vs = [v for r in rs for v in r["views"]]
-		ratios = np.array([v["ratio"] for v in vs if v["ok"]])
-		err = np.array([v["err"] for v in vs if v["ok"]])
-		print(f"{kind:6s} {len(rs)} groups, {len(vs)} views: fx estimate / true median {np.median(ratios):.3f}, "
-			f"|log ratio| p50 {np.median(np.abs(np.log(ratios))):.3f} p95 {np.percentile(np.abs(np.log(ratios)), 95):.3f} max {np.abs(np.log(ratios)).max():.3f}; "
-			f"views located (< 0.5 cubie) {int((err < 0.5).sum())}/{len(vs)}; groups exact {sum(r.get('wrong') == 0 for r in rs)}/{len(rs)}; "
-			f"{np.mean([v['ms'] for v in vs]):.0f} ms/view ({np.mean([v['tried'] for v in vs]):.0f} solves)")
-		bad = [(r["group"], i + 1, round(v["ratio"], 2), round(v.get("err", -1), 2)) for r in rs for i, v in enumerate(r["views"]) if not v["ok"] or v["err"] >= 0.5]
+		single = np.abs(np.log([v["ratio"] for v in vs]))
+		joint = np.abs(np.log([r["group_ratio"] for r in rs]))
+		print(f"{kind:6s} {len(rs)} groups: |log fx error| single view p50 {np.median(single):.3f} p95 {np.percentile(single, 95):.3f} max {single.max():.3f} "
+			f"({np.mean([v['ms'] for v in vs]):.0f} ms, {np.mean([v['solves'] for v in vs]):.0f} solves); three views p50 {np.median(joint):.3f} max {joint.max():.3f} "
+			f"({np.mean([r['group_ms'] for r in rs]):.0f} ms); with the joint estimate: views located {sum(v['err'] < 0.5 for v in vs)}/{len(vs)}, "
+			f"groups exact {sum(r.get('wrong') == 0 for r in rs)}/{len(rs)}")
+		bad = [(r["group"], round(r["group_ratio"], 3), r.get("wrong")) for r in rs if r.get("wrong") != 0]
 		if bad:
-			print("   not located (group, view, fx ratio, err):", bad)
-		wrong = [(r["group"], r.get("wrong")) for r in rs if r.get("wrong") != 0]
-		if wrong:
-			print("   groups not exact:", wrong)
+			print("   not exact (group, fx ratio, wrong):", bad)
 	print(f"\n{len(rows)} scenarios in {time.time() - t0:.0f} s")
 
 

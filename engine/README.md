@@ -23,7 +23,7 @@ and the iterative searches amplify last-bit differences.
 | stage | call | cost (desktop, 1024 px) |
 |---|---|---|
 | one photo / frame → pose + 27 facelet colours | `Detector::detect(image, camera, {Search::Wide})` | ~0.56 s |
-| one photo, unknown camera (`Camera.fx = 0`) | `Detector::detect` estimates the focal length | ~4–5 s (14 solves) |
+| unknown camera: focal length, once per camera | `Detector::estimateFocal(images)` | ~1.7–3 s for one image, ~5–9 s for three |
 | tracked frame from a prior pose | `Detector::detect(image, camera, {Search::Local, prior})` | ~0.22 s (position 58 ms) |
 | colours at a known pose | `Detector::sample(image, camera, pose)` | ~11 ms (Lab only inside the 27 patches) |
 | views → one cube frame | `Evidence::addView(samples, rotation = -1)`, `Evidence::fuse()` | ms |
@@ -65,10 +65,14 @@ so an app should score frames where the turn has settled (lattice cost back to n
 - Not bit-identical to Python, by design: RANSAC uses its own generator (Python draws from numpy's PCG64), and
   BGR→Lab uses the exact formula rather than OpenCV's 16-bit LUT interpolation (≤ 0.5 ΔLab). Results agree at the
   level of states and sticker positions.
-- Unknown focal length (`tools/focal_check.py`, 2026-10-28; 80 groups of renders/edits with K hidden): estimated fx
-  within 2–3 % (median), 7–10 % (p95), 19 % (max) of the truth; all 240 views located, all 80 groups exact. The
-  criterion is the share of *all* segment weight the lattice explains — the lattice cost alone (averaged over the
-  segments assigned to the axes) picked fx 2–5× too long, where few segments fit and fit well (9/40 render groups).
-  A real photo without EXIF (`klstudio/footages.local/rubik-samples/IMG_20190901_150650.jpg`, square crop): fx ≈
-  1.1 × width, the 27 visible stickers sampled correctly.
+- Focal length (`Detector::estimateFocal`, `tools/focal_check.py`, 80 groups with K hidden): a separate step before
+  detection — `detect` refuses `fx <= 0`. Criterion: the share of *all* segment weight the lattice explains (the
+  lattice cost alone, averaged over the segments assigned to the axes, picked fx 2–5× too long, where few segments fit
+  and fit well: 9/40 render groups). Coarse: 8 log-spaced fx / long side over 0.45–2.6 at 512 px, each a quick wide
+  solve (3 starts, 1 joint refinement), narrows the range; fine: 6 golden-section steps at 1024 px, each a *local*
+  solve from the coarse pose (at k·f the same projection is the centre (x, y, k·z)), ~70 ms each. Error: one view
+  p50 2–3 %, p95 7–10 %, max 15 %; three views together max 9–16 %. With the joint estimate all 240 views located and
+  all 80 groups exact. 384 px coarse gave occasional outliers (max 99 % log error on one hand view): 512 is the
+  default. Real photo without EXIF (`klstudio/footages.local/rubik-samples/IMG_20190901_150650.jpg`): fx ≈ 1.1 × long
+  side, support 0.67; the coarse curve peaks clearly at 1.23.
 - Speed: ~0.56 s per view vs ~4.6 s in Python on the same machine (single thread each).

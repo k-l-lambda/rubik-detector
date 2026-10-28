@@ -44,8 +44,8 @@ struct Image {
 
 struct Camera {
 	double fx = 0, fy = 0, cx = 0, cy = 0;   // pixels of the Image passed with it
-	// detect(): fx <= 0 = unknown focal length, estimated (DetectOptions::focal*); cx, cy <= 0 = the image centre;
-	// fy <= 0 = fx (square pixels)
+	// cx, cy <= 0 = the image centre; fy <= 0 = fx (square pixels). detect() needs fx: for an unknown camera,
+	// Detector::estimateFocal first, once per camera (and zoom), then reuse it
 };
 
 struct Pose {
@@ -87,12 +87,6 @@ struct DetectOptions {
 	uint64_t seed = 0;                // RANSAC
 	// framing prior of the wide search: cube outline share of the long image side, centre share of each side
 	double minExtent = 0.2, maxExtent = 0.9, centreShare = 0.8;
-	// unknown focal length (Camera::fx <= 0): the one whose lattice fit explains the largest share of all segment
-	// weight (not the lowest lattice cost, which ignores the segments left out of the axes); fx / long side in [focalMin, focalMax] (≈ 90°–20° of
-	// horizontal view on the long side), focalSteps log-spaced, then focalRefine golden-section steps around the
-	// best. Each step is a full axes + position solve (~0.4 s); estimate once per camera and pass it from then on.
-	double focalMin = 0.45, focalMax = 2.6;
-	int focalSteps = 8, focalRefine = 4;
 };
 
 struct ViewResult {
@@ -102,12 +96,39 @@ struct ViewResult {
 	double latticeCost = 1;           // mean segment cost at the pose (0 perfect … 1 no support); lower = better fit
 	int segmentCount = 0;             // all detected / in an axis family
 	int familySegments = 0;
-	Camera camera;                    // the camera used (input pixels): as given, or with the estimated focal length
-	bool focalEstimated = false;
-	int focalTried = 0;               // solves run by the focal search
+	Camera camera;                    // the camera used (input pixels, principal point / fy completed)
+	double support = 0;               // share of all segment weight the lattice explains (0–1; see FocalEstimate)
 	std::vector<FaceletSample> samples;   // the 27 visible facelets (view frame)
 	std::vector<Segment> segments;        // if keepSegments
 	Timings timings;
+};
+
+// Focal length of an unknown camera, a step of its own before detection (and stable after it): the focal length
+// whose lattice fit explains the largest share of all segment weight, averaged over the images given (several views
+// from one camera steady it). Not the lowest lattice cost: that averages over the segments assigned to the axes,
+// and a wrong focal length assigns few that fit well. Coarse: coarseSteps log-spaced fx / long side over
+// [focalMin, focalMax] (≈ 96°–21° horizontal view on the long side) at coarseWidth, which narrows the range; fine:
+// refineSteps golden-section steps between the coarse best's neighbours at workWidth. Each step is an axes +
+// position solve per image.
+struct FocalOptions {
+	double focalMin = 0.45, focalMax = 2.6;
+	int coarseSteps = 8;
+	int coarseWidth = 512;
+	int refineSteps = 4;
+	int workWidth = 1024;
+	uint64_t seed = 0;
+	double minExtent = 0.2, maxExtent = 0.9, centreShare = 0.8;
+};
+
+struct FocalEstimate {
+	bool ok = false;
+	std::string error;
+	Camera camera;          // estimated fx = fy; cx, cy from the hint or the image centre
+	double ratio = 0;       // fx / long image side
+	double support = 0;     // mean share of segment weight explained at it
+	std::vector<std::pair<double, double>> curve;   // coarse scan: (fx / long side, support)
+	int solves = 0;
+	double ms = 0;
 };
 
 class Detector {
@@ -118,6 +139,8 @@ public:
 	Detector& operator= (Detector&&) noexcept;
 
 	ViewResult detect (const Image& image, const Camera& camera, const DetectOptions& options = {});
+	// images: one or more photos from the same camera (same size); hint: principal point (cx, cy) if known
+	FocalEstimate estimateFocal (const std::vector<Image>& images, const Camera& hint = {}, const FocalOptions& options = {});
 	// colours of the visible facelets at a known pose (input camera), no geometry search; workWidth and sampleSize as
 	// in DetectOptions (keep them equal to the detection's for comparable colours)
 	std::vector<FaceletSample> sample (const Image& image, const Camera& camera, const Pose& pose, int workWidth = 1024, double sampleSize = 0.46);

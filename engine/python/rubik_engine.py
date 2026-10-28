@@ -14,16 +14,21 @@ class Sample(ctypes.Structure):
 class Options(ctypes.Structure):
 	_fields_ = [("search", ctypes.c_int32), ("prior", ctypes.c_double * 12), ("work_width", ctypes.c_int32),
 		("sample_size", ctypes.c_double), ("seed", ctypes.c_uint64),
-		("min_extent", ctypes.c_double), ("max_extent", ctypes.c_double), ("centre_share", ctypes.c_double),
-		("focal_min", ctypes.c_double), ("focal_max", ctypes.c_double), ("focal_steps", ctypes.c_int32), ("focal_refine", ctypes.c_int32)]
+		("min_extent", ctypes.c_double), ("max_extent", ctypes.c_double), ("centre_share", ctypes.c_double)]
 
 
 class View(ctypes.Structure):
 	_fields_ = [("ok", ctypes.c_int32), ("error", ctypes.c_char * 96), ("pose", ctypes.c_double * 12),
 		("lattice_cost", ctypes.c_double), ("segment_count", ctypes.c_int32), ("family_segments", ctypes.c_int32),
-		("camera", ctypes.c_double * 4), ("focal_estimated", ctypes.c_int32), ("focal_tried", ctypes.c_int32),
+		("camera", ctypes.c_double * 4), ("support", ctypes.c_double),
 		("ms_segments", ctypes.c_double), ("ms_axes", ctypes.c_double), ("ms_position", ctypes.c_double), ("ms_sampling", ctypes.c_double),
 		("sample_count", ctypes.c_int32), ("samples", Sample * 27)]
+
+
+class Focal(ctypes.Structure):
+	_fields_ = [("ok", ctypes.c_int32), ("error", ctypes.c_char * 96), ("camera", ctypes.c_double * 4), ("ratio", ctypes.c_double),
+		("support", ctypes.c_double), ("ms", ctypes.c_double), ("solves", ctypes.c_int32), ("curve_count", ctypes.c_int32),
+		("curve", (ctypes.c_double * 2) * 32)]
 
 
 class State(ctypes.Structure):
@@ -46,6 +51,8 @@ _lib.rk_score_states.argtypes = [ctypes.c_int32, ctypes.POINTER(Sample), ctypes.
 _lib.rk_sample_at.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
 	ctypes.POINTER(ctypes.c_double * 4), ctypes.POINTER(ctypes.c_double * 12), ctypes.c_int32, ctypes.c_double, ctypes.POINTER(Sample * 27)]
 _lib.rk_sample_at.restype = ctypes.c_int32
+_lib.rk_estimate_focal.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.POINTER(ctypes.c_void_p), ctypes.c_int32, ctypes.c_int32,
+	ctypes.POINTER(ctypes.c_int32), ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int32 * 4), ctypes.POINTER(Focal)]
 _lib.rk_apply_moves.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
 _lib.rk_compare_states.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
 
@@ -55,7 +62,7 @@ def view_dict(v):
 		for s in v.samples[:v.sample_count]]
 	return {"ok": bool(v.ok), "error": v.error.decode(), "R": np.array(v.pose[:9]).reshape(3, 3), "t": np.array(v.pose[9:]),
 		"lattice_cost": v.lattice_cost, "segments": v.segment_count, "family_segments": v.family_segments,
-		"camera": list(v.camera), "focal_estimated": bool(v.focal_estimated), "focal_tried": v.focal_tried,
+		"camera": list(v.camera), "support": v.support,
 		"ms": {"segments": v.ms_segments, "axes": v.ms_axes, "position": v.ms_position, "sampling": v.ms_sampling},
 		"samples": samples, "_raw": v}
 
@@ -69,8 +76,7 @@ class Detector:
 			_lib.rk_detector_free(self._d)
 
 	def detect(self, image_bgr, K, work_width=1024, prior=None, seed=0):
-		"""image_bgr: (H, W, 3) uint8 (cv2.imread); K: 3×3 for this image, or None: focal length estimated, principal
-		point at the centre. prior: (R, t) for a local search."""
+		"""image_bgr: (H, W, 3) uint8 (cv2.imread); K: 3×3 for this image. prior: (R, t) for a local search."""
 		img = np.ascontiguousarray(image_bgr, np.uint8)
 		o = Options()
 		_lib.rk_default_options(ctypes.byref(o))
@@ -79,10 +85,22 @@ class Detector:
 		if prior is not None:
 			o.search = 1
 			o.prior[:] = list(np.asarray(prior[0], float).ravel()) + list(np.asarray(prior[1], float))
-		k = (ctypes.c_double * 4)(*((0, 0, 0, 0) if K is None else (K[0][0], K[1][1], K[0][2], K[1][2])))
+		k = (ctypes.c_double * 4)(K[0][0], K[1][1], K[0][2], K[1][2])
 		v = View()
 		_lib.rk_detect(self._d, img.ctypes.data, img.shape[1], img.shape[0], img.strides[0], 0, ctypes.byref(k), ctypes.byref(o), ctypes.byref(v))
 		return view_dict(v)
+
+	def estimate_focal(self, images_bgr, coarse_width=0, coarse_steps=0, refine_steps=0, work_width=0):
+		# Focal length from one or more same-size BGR images of one camera: camera (fx fy cx cy), ratio (fx / long
+		# side), support, the coarse curve, solves, ms.
+		imgs = [np.ascontiguousarray(i, np.uint8) for i in images_bgr]
+		ptrs = (ctypes.c_void_p * len(imgs))(*[i.ctypes.data for i in imgs])
+		strides = (ctypes.c_int32 * len(imgs))(*[i.strides[0] for i in imgs])
+		steps = (ctypes.c_int32 * 4)(coarse_width, coarse_steps, refine_steps, work_width)
+		out = Focal()
+		_lib.rk_estimate_focal(self._d, len(imgs), ptrs, imgs[0].shape[1], imgs[0].shape[0], strides, 0, None, None, ctypes.byref(steps), ctypes.byref(out))
+		return {"ok": bool(out.ok), "error": out.error.decode(), "camera": list(out.camera), "ratio": out.ratio, "support": out.support,
+			"curve": [tuple(out.curve[i]) for i in range(out.curve_count)], "solves": out.solves, "ms": out.ms}
 
 	def sample(self, image_bgr, K, R, t, work_width=1024, sample_size=0.46):
 		img = np.ascontiguousarray(image_bgr, np.uint8)

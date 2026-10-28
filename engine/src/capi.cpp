@@ -31,10 +31,6 @@ void rk_default_options (rk_options* o) {
 	o->min_extent = d.minExtent;
 	o->max_extent = d.maxExtent;
 	o->centre_share = d.centreShare;
-	o->focal_min = d.focalMin;
-	o->focal_max = d.focalMax;
-	o->focal_steps = d.focalSteps;
-	o->focal_refine = d.focalRefine;
 }
 
 rk_detector* rk_detector_new (void) { return new rk_detector; }
@@ -55,10 +51,6 @@ void rk_detect (rk_detector* d, const uint8_t* data, int32_t width, int32_t heig
 	options.minExtent = o->min_extent;
 	options.maxExtent = o->max_extent;
 	options.centreShare = o->centre_share;
-	options.focalMin = o->focal_min;
-	options.focalMax = o->focal_max;
-	options.focalSteps = o->focal_steps;
-	options.focalRefine = o->focal_refine;
 	try {
 		ViewResult r = d->detector.detect(image, camera, options);
 		out->ok = r.ok;
@@ -72,8 +64,7 @@ void rk_detect (rk_detector* d, const uint8_t* data, int32_t width, int32_t heig
 		out->camera[1] = r.camera.fy;
 		out->camera[2] = r.camera.cx;
 		out->camera[3] = r.camera.cy;
-		out->focal_estimated = r.focalEstimated;
-		out->focal_tried = r.focalTried;
+		out->support = r.support;
 		out->ms_segments = r.timings.segments;
 		out->ms_axes = r.timings.axes;
 		out->ms_position = r.timings.position;
@@ -88,6 +79,56 @@ void rk_detect (rk_detector* d, const uint8_t* data, int32_t width, int32_t heig
 	catch (const std::exception& e) {
 		out->ok = 0;
 		copyError(out->error, e.what());
+	}
+}
+
+void rk_estimate_focal (rk_detector* d, int32_t count, const uint8_t* const* data, int32_t width, int32_t height,
+	const int32_t* strides, int32_t format, const double hint[2], const double range[2], const int32_t steps[4], rk_focal* out) {
+	std::memset(out, 0, sizeof(*out));
+	try {
+		std::vector<Image> images;
+		for (int i = 0; i < count; i++)
+			images.push_back({data[i], width, height, strides ? strides[i] : 0, PixelFormat(format)});
+		Camera h;
+		if (hint) {
+			h.cx = hint[0];
+			h.cy = hint[1];
+		}
+		FocalOptions o;
+		if (range && range[0] > 0 && range[1] > range[0]) {
+			o.focalMin = range[0];
+			o.focalMax = range[1];
+		}
+		if (steps) {
+			if (steps[0] > 0)
+				o.coarseWidth = steps[0];
+			if (steps[1] > 0)
+				o.coarseSteps = std::min(steps[1], 32);
+			if (steps[2] > 0)
+				o.refineSteps = steps[2];
+			if (steps[3] > 0)
+				o.workWidth = steps[3];
+		}
+		FocalEstimate e = d->detector.estimateFocal(images, h, o);
+		out->ok = e.ok;
+		copyError(out->error, e.error);
+		out->camera[0] = e.camera.fx;
+		out->camera[1] = e.camera.fy;
+		out->camera[2] = e.camera.cx;
+		out->camera[3] = e.camera.cy;
+		out->ratio = e.ratio;
+		out->support = e.support;
+		out->ms = e.ms;
+		out->solves = e.solves;
+		out->curve_count = int32_t(std::min<size_t>(e.curve.size(), 32));
+		for (int i = 0; i < out->curve_count; i++) {
+			out->curve[i][0] = e.curve[i].first;
+			out->curve[i][1] = e.curve[i].second;
+		}
+	}
+	catch (const std::exception& ex) {
+		out->ok = 0;
+		copyError(out->error, ex.what());
 	}
 }
 

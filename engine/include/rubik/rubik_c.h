@@ -31,8 +31,6 @@ typedef struct {
 	double sample_size;
 	uint64_t seed;
 	double min_extent, max_extent, centre_share;
-	double focal_min, focal_max;     // unknown focal length (K[0] <= 0): fx / long side search range
-	int32_t focal_steps, focal_refine;
 } rk_options;
 
 typedef struct {
@@ -41,8 +39,8 @@ typedef struct {
 	double pose[12];         // R then t
 	double lattice_cost;
 	int32_t segment_count, family_segments;
-	double camera[4];        // fx fy cx cy used (estimated if K[0] <= 0)
-	int32_t focal_estimated, focal_tried;
+	double camera[4];        // fx fy cx cy used (principal point / fy completed)
+	double support;          // share of segment weight the lattice explains
 	double ms_segments, ms_axes, ms_position, ms_sampling;
 	int32_t sample_count;
 	rk_sample samples[27];
@@ -51,7 +49,7 @@ typedef struct {
 RK_API void rk_default_options (rk_options* options);
 RK_API rk_detector* rk_detector_new (void);
 RK_API void rk_detector_free (rk_detector* detector);
-// format: 0 BGR, 1 RGB, 2 BGRA, 3 RGBA; K: fx fy cx cy in pixels of this image (fx <= 0: estimated; cx, cy <= 0: centre)
+// format: 0 BGR, 1 RGB, 2 BGRA, 3 RGBA; K: fx fy cx cy in pixels of this image (cx, cy <= 0: centre; fx must be known — rk_estimate_focal)
 RK_API void rk_detect (rk_detector* detector, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format,
 	const double K[4], const rk_options* options, rk_view* out);
 
@@ -80,6 +78,22 @@ RK_API void rk_estimate (int32_t views, const rk_sample* samples, const int32_t*
 // samples of view `view` under the fitted colour model: scores[i] = negative log-likelihood (lower = better).
 RK_API void rk_score_states (int32_t views, const rk_sample* samples, const int32_t* counts, const int32_t* rotations,
 	int32_t require_all_faces, int32_t view, int32_t n_states, const char* states, double* scores, rk_state* out);
+
+typedef struct {
+	int32_t ok;
+	char error[96];
+	double camera[4];        // fx fy cx cy
+	double ratio, support, ms;
+	int32_t solves;
+	int32_t curve_count;
+	double curve[32][2];     // coarse scan: fx / long side, support
+} rk_focal;
+
+// Focal length of an unknown camera from 1–16 same-size images (data[i], strides[i]); hint: cx cy (NULL = centre);
+// focal_range: min, max of fx / long side (NULL = defaults); steps: coarse_width, coarse_steps, refine_steps,
+// work_width (NULL or 0 = defaults).
+RK_API void rk_estimate_focal (rk_detector* detector, int32_t count, const uint8_t* const* data, int32_t width, int32_t height,
+	const int32_t* strides, int32_t format, const double hint[2], const double focal_range[2], const int32_t steps[4], rk_focal* out);
 
 // 54-letter state after space-separated moves; returns 0 on bad input
 RK_API int32_t rk_apply_moves (const char* state, const char* moves, char out[55]);

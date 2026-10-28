@@ -470,7 +470,7 @@ PoseFit fromCells (const Intrinsics& K, const M3& R, const LatticeInput& in, con
 
 }
 
-PoseFit positionWide (const Intrinsics& K, const M3& R, const Segments& segs, int width, int height, const FramingPrior& prior) {
+PoseFit positionWide (const Intrinsics& K, const M3& R, const Segments& segs, int width, int height, const FramingPrior& prior, int starts, int joint) {
 	LatticeInput in = latticeInput(K, segs);
 	const double L = std::max(width, height);
 	// per depth (log step 0.1), (u, v) steps of a third of the cubie pitch, over the framing prior
@@ -488,7 +488,7 @@ PoseFit positionWide (const Intrinsics& K, const M3& R, const Segments& segs, in
 			for (int iu = 0; iu < nu; iu++)
 				cells.push_back({u0 + iu * step, v0 + iv * step, lz});
 	}
-	return fromCells(K, R, in, cells, 8, 3);
+	return fromCells(K, R, in, cells, starts, joint);
 }
 
 PoseFit positionLocal (const Intrinsics& K, const M3& R, V3 t, const Segments& segs) {
