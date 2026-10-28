@@ -13,6 +13,8 @@ apps. The Python package stays the reference; `tools/parity.py` checks the engin
 	python/rubik_engine.py     ctypes binding
 	tools/parity.py            engine vs the Python reference over all samples
 	tools/api_check.py         tracking / renamed frames / turn scoring on the samples
+	tools/focal_check.py       focal length estimation vs the samples' true K
+	tools/hud_video.py         a detection HUD on a video, with the engine's real latency (× a phone factor)
 
 Build: `cmake -S engine -B engine/build && cmake --build engine/build -j` (static `librubik_engine.a`, shared
 `librubik_engine.so`, `rubik_engine_tests`). `-ffp-contract=off` is set on purpose: ARM64 would otherwise fuse a·b+c
