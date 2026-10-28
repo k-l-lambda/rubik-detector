@@ -81,13 +81,18 @@ struct PoseFit {
 
 struct FramingPrior {
 	double minExtent = 0.2, maxExtent = 0.9, centreShare = 0.8;
+	// search effort (DetectOptions): segments used to rank the coarse cells (the heaviest), shift check over pairs of
+	// axes too (a fit two cubies off diagonally), starts / joint of the wide search (0: the caller's)
+	int coarseSegments = 300;
+	bool shiftPairs = false;
+	int starts = 0, joint = 0;
 };
 
 // starts / joint: distinct starts refined, of them jointly refined with a rotation (8, 3; fewer for a quick ranking)
 PoseFit positionWide (const Intrinsics& K, const M3& R, const Segments& segs, int width, int height, const FramingPrior& prior,
 	int starts = 8, int joint = 3);
 // a tracked frame: joint refinement from a prior pose (and the ±1 cubie shift check)
-PoseFit positionLocal (const Intrinsics& K, const M3& R, V3 t, const Segments& segs);
+PoseFit positionLocal (const Intrinsics& K, const M3& R, V3 t, const Segments& segs, const FramingPrior& effort = {});
 
 // sampled-part quads of the R, U, F facelets (view frame) at a pose
 std::vector<std::pair<int, std::array<double, 8>>> faceletQuads (const Intrinsics& K, const M3& R, V3 t, double sampleSize);

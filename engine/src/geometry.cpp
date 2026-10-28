@@ -331,6 +331,10 @@ namespace {
 struct PoseSearch {
 	const Intrinsics& K;
 	const LatticeInput& in;
+	// log-depth range the search may use: outside it a pose costs as if no segment fit. Without it the refinement can
+	// run to a lattice several times the cube's size (a pitch of several cubies) on which a few long segments happen to
+	// fit, at a low cost averaged over the few assigned — seen on real video, accepted at cost 0.04.
+	double lzLo = -1e300, lzHi = 1e300;
 
 	V3 tOf (const Vec& x) const {
 		double z = std::exp(x[2]);
@@ -339,7 +343,11 @@ struct PoseSearch {
 
 	Vec xOf (V3 t) const { return {K.fx * t.x / t.z + K.cx, K.fy * t.y / t.z + K.cy, std::log(t.z)}; }
 
-	double cost (const Vec& x, const M3& R, double tol = 0.35) const { return latticeCost(R, tOf(x), in, tol); }
+	double cost (const Vec& x, const M3& R, double tol = 0.35) const {
+		if (x[2] < lzLo || x[2] > lzHi)
+			return 1.0;
+		return latticeCost(R, tOf(x), in, tol);
+	}
 
 	// Nelder–Mead simplices sized to the problem: a quarter cubie in (u, v, log Z), a degree in rotation
 	std::vector<Vec> simplex (const Vec& x, bool rotation) const {
@@ -367,15 +375,31 @@ struct PoseSearch {
 		return {matmul(rodrigues({res.x[3], res.x[4], res.x[5]}), R), tOf({res.x[0], res.x[1], res.x[2]}), res.fun};
 	}
 
-	// the lattice repeats every cubie: shifts by ±1 along each axis, with the refined axes
-	PoseFit shiftCheck (PoseFit best) const {
+	// the lattice repeats every cubie: shifts by ±1 along each axis (pairs: also along two axes at once), with the
+	// refined axes
+	PoseFit shiftCheck (PoseFit best, bool pairs = false) const {
+		std::vector<V3> shifts;
+		for (int a = 0; a < 3; a++)
+			for (int sgn : {-1, 1}) {
+				V3 d{0, 0, 0};
+				d[a] = sgn;
+				shifts.push_back(d);
+			}
+		if (pairs)
+			for (int a = 0; a < 3; a++)
+				for (int b = a + 1; b < 3; b++)
+					for (int sa : {-1, 1})
+						for (int sb : {-1, 1}) {
+							V3 d{0, 0, 0};
+							d[a] = sa;
+							d[b] = sb;
+							shifts.push_back(d);
+						}
 		bool moved = true;
 		while (moved) {
 			moved = false;
-			for (int a = 0; a < 3; a++) {
-				for (int sgn : {-1, 1}) {
-					V3 d{0, 0, 0};
-					d[a] = sgn;
+			for (const V3& d : shifts) {
+				{
 					Vec s = xOf(best.t + mul(best.R, d));
 					Vec y = refine3(s, best.R, 0.35);
 					double cy = cost(y, best.R);
@@ -411,11 +435,22 @@ LatticeInput heaviest (const LatticeInput& in, size_t count) {
 // From coarse cells (u, v, log Z): rank by the coarse cost (wide phase tolerance, heaviest segments), refine
 // `starts` distinct ones (tolerance 0.5 → 0.35), jointly refine the best `joint` with a small rotation (loose),
 // polish the winner, check ±1 cubie shifts.
-PoseFit fromCells (const Intrinsics& K, const M3& R, const LatticeInput& in, const std::vector<Vec>& cells, int starts, int joint) {
-	const size_t COARSE_SEGMENTS = 300;
+PoseFit fromCells (const Intrinsics& K, const M3& R, const LatticeInput& in, const std::vector<Vec>& cells, int starts, int joint,
+	const FramingPrior& effort) {
+	const size_t COARSE_SEGMENTS = effort.coarseSegments > 0 ? size_t(effort.coarseSegments) : in.w.size();
+	const double DEPTH_MARGIN = 0.15;   // log depth beyond the cells' range (±16 %)
 	LatticeInput top = heaviest(in, COARSE_SEGMENTS);
 	PoseSearch search{K, in};
 	PoseSearch coarse{K, top};
+	if (!cells.empty()) {
+		double lo = 1e300, hi = -1e300;
+		for (const Vec& c : cells) {
+			lo = std::min(lo, c[2]);
+			hi = std::max(hi, c[2]);
+		}
+		search.lzLo = coarse.lzLo = lo - DEPTH_MARGIN;
+		search.lzHi = coarse.lzHi = hi + DEPTH_MARGIN;
+	}
 	std::vector<double> costs(cells.size());
 	for (size_t i = 0; i < cells.size(); i++)
 		costs[i] = coarse.cost(cells[i], R, 0.5);
@@ -465,7 +500,7 @@ PoseFit fromCells (const Intrinsics& K, const M3& R, const LatticeInput& in, con
 			best = f;
 	}
 	best = search.refine6(best.R, search.xOf(best.t));
-	return search.shiftCheck(best);
+	return search.shiftCheck(best, effort.shiftPairs);
 }
 
 }
@@ -488,10 +523,10 @@ PoseFit positionWide (const Intrinsics& K, const M3& R, const Segments& segs, in
 			for (int iu = 0; iu < nu; iu++)
 				cells.push_back({u0 + iu * step, v0 + iv * step, lz});
 	}
-	return fromCells(K, R, in, cells, starts, joint);
+	return fromCells(K, R, in, cells, prior.starts > 0 ? prior.starts : starts, prior.joint > 0 ? prior.joint : joint, prior);
 }
 
-PoseFit positionLocal (const Intrinsics& K, const M3& R, V3 t, const Segments& segs) {
+PoseFit positionLocal (const Intrinsics& K, const M3& R, V3 t, const Segments& segs, const FramingPrior& effort) {
 	LatticeInput in = latticeInput(K, segs);
 	PoseSearch search{K, in};
 	// the prior's neighbourhood: ±2/3 cubie in (u, v) at thirds of a cubie, depth ±10 % in log steps of 0.05
@@ -502,7 +537,7 @@ PoseFit positionLocal (const Intrinsics& K, const M3& R, V3 t, const Segments& s
 		for (int iv = -2; iv <= 2; iv++)
 			for (int iu = -2; iu <= 2; iu++)
 				cells.push_back({x0[0] + iu * step, x0[1] + iv * step, x0[2] + 0.05 * iz});
-	return fromCells(K, R, in, cells, 3, 2);
+	return fromCells(K, R, in, cells, 3, 2, effort);
 }
 
 std::vector<std::pair<int, std::array<double, 8>>> faceletQuads (const Intrinsics& K, const M3& R, V3 t, double sampleSize) {

@@ -14,6 +14,7 @@ apps. The Python package stays the reference; `tools/parity.py` checks the engin
 	tools/parity.py            engine vs the Python reference over all samples
 	tools/api_check.py         tracking / renamed frames / turn scoring on the samples
 	tools/focal_check.py       focal length estimation vs the samples' true K
+	tools/real_video.py        per-frame detection on a real (unlabelled) video, overlays and cost / extent statistics
 	tools/hud_video.py         a detection HUD on a video, with the engine's real latency (× a phone factor)
 	tools/state_tracker.py     app-layer prototype on a camera stream: FOV → evidence of every frame → Bayesian colour
 	                           posteriors → legal state (from five faces), panel top right
@@ -111,3 +112,16 @@ so an app should score frames where the turn has settled (lattice cost back to n
   default. Real photo without EXIF (`klstudio/footages.local/rubik-samples/IMG_20190901_150650.jpg`): fx ≈ 1.1 × long
   side, support 0.67; the coarse curve peaks clearly at 1.23.
 - Speed: ~0.56 s per view vs ~4.6 s in Python on the same machine (single thread each).
+- Real hand-held video (`klstudio/footages.local/VID_20261028_225115.mp4`, 720×1280, 30 fps, GAN stickerless cube on
+  a desk, hand-held, frames extracted to `~/data/rubik-renderer/real/vid225115`), every 2nd frame on its own (wide),
+  fx 1070 (estimateFocal over 4 frames): before 69 % of frames fit (cost ≤ 0.15), 586 ms, but 11 of the accepted
+  fits (all 1082 frames) were oversized lattices (projected cube larger than the frame, depth ~3 instead of ~10: a
+  few long segments fit a pitch of several cubies at cost ~0.04) — the refinement left the framing prior's depth
+  range. Now the position search is bounded to its cells' depth range ±16 %: 1 such fit left. Frames are never
+  upscaled (a 720-wide frame at workWidth 1024 was 2× the pixels): 367 ms, 67 %. `starts = 16, joint = 5`
+  (DetectOptions, opt-in): 71 % at 393 ms; on the synthetic photos it costs +15 % position time, hence not default.
+  Failures: blur, the hand over the cube, and clear views whose position search lands one or two cubies off (a
+  better pose exists at a lower cost: found from shifted starts); even the right pose often costs 0.15–0.3 here
+  (rounded tiles, perspective) — the 0.15 acceptance threshold was set on renders. Tried and dropped: reversing
+  the sign of a nearly edge-on axis (improved 27 of 337 failures, none under 0.15). Debug calls added:
+  `rk_detect_segments` (segments with the result), `rk_pose_cost` / `Detector::poseCost` (cost of a given pose).

@@ -81,12 +81,18 @@ enum class Search {
 struct DetectOptions {
 	Search search = Search::Wide;
 	Pose prior;                       // Search::Local: start pose (input camera)
-	int workWidth = 1024;             // the image is resized (INTER_AREA) to this width first; 0 = as given
+	int workWidth = 1024;             // the image is resized (INTER_AREA) to this width first (never up); 0 = as given
 	double sampleSize = 0.46;         // sampled share of a sticker's side
 	bool keepSegments = false;        // fill ViewResult::segments (debug overlays)
 	uint64_t seed = 0;                // RANSAC
 	// framing prior of the wide search: cube outline share of the long image side, centre share of each side
 	double minExtent = 0.2, maxExtent = 0.9, centreShare = 0.8;
+	// search effort: segments ranking the coarse cells (the heaviest; 0 = all), shift check also over pairs of axes,
+	// wide-search starts / joint refinements (0 = 8 / 3). 16 / 5: on a real hand-held video 72 % of frames fit
+	// (cost ≤ 0.15) vs 69 % with 8 / 3, for +4 % time there but +15 % on the synthetic photos (position 390 → 447 ms)
+	int coarseSegments = 300;
+	bool shiftPairs = false;
+	int starts = 0, joint = 0;
 };
 
 struct ViewResult {
@@ -144,6 +150,8 @@ public:
 	// colours of the visible facelets at a known pose (input camera), no geometry search; workWidth and sampleSize as
 	// in DetectOptions (keep them equal to the detection's for comparable colours)
 	std::vector<FaceletSample> sample (const Image& image, const Camera& camera, const Pose& pose, int workWidth = 1024, double sampleSize = 0.46);
+	// debugging: the lattice cost of a given pose (segments assigned to its axes as a local search would, no search)
+	double poseCost (const Image& image, const Camera& camera, const Pose& pose, int workWidth = 1024);
 
 private:
 	struct Scratch;

@@ -115,8 +115,8 @@ Solve solveFor (const Segments& base, const Intrinsics& K, int W, int H, const D
 		return out;
 	}
 	t0 = std::chrono::steady_clock::now();
-	FramingPrior framing{options.minExtent, options.maxExtent, options.centreShare};
-	out.fit = options.search == Search::Wide ? positionWide(K, R, segs, W, H, framing, starts, joint) : positionLocal(K, R, t, segs);
+	FramingPrior framing{options.minExtent, options.maxExtent, options.centreShare, options.coarseSegments, options.shiftPairs, options.starts, options.joint};
+	out.fit = options.search == Search::Wide ? positionWide(K, R, segs, W, H, framing, starts, joint) : positionLocal(K, R, t, segs, framing);
 	out.msPosition = ms(t0);
 	double all = 0, fam = 0;
 	for (size_t i = 0; i < segs.w.size(); i++) {
@@ -151,7 +151,8 @@ Prepared prepare (const Image& image, int workWidth, Gray8 planes[3]) {
 		return p;
 	}
 	auto t0 = std::chrono::steady_clock::now();
-	workingPlanes(image, workWidth, planes);
+	// never upscaled: interpolated pixels add no lines, only time (a 720-wide video frame at 1024: 2× the pixels)
+	workingPlanes(image, workWidth > 0 ? std::min(workWidth, image.width) : workWidth, planes);
 	p.s = double(planes[0].width) / image.width;
 	p.W = planes[0].width;
 	p.H = planes[0].height;
@@ -216,6 +217,21 @@ ViewResult Detector::detect (const Image& image, const Camera& camera, const Det
 				float(best.segs.s[i][3] / p.s), float(best.segs.w[i]), best.segs.family[i]});
 	out.ok = true;
 	return out;
+}
+
+double Detector::poseCost (const Image& image, const Camera& camera, const Pose& pose, int workWidth) {
+	Prepared p = prepare(image, workWidth, scratch->planes);
+	if (!p.ok)
+		return 1.0;
+	const Intrinsics K = scaled(completed(camera, image), p.s);
+	Segments segs = p.segs;
+	planeNormals(K, segs);
+	M3 P = poseR(pose);
+	M3 D = {P[0], P[3], P[6], P[1], P[4], P[7], P[2], P[5], P[8]};
+	refineAxes(segs, D);
+	// keep the given axes (refineAxes only assigns the families here) and signs
+	LatticeInput in = latticeInput(K, segs);
+	return latticeCost(P, {pose.t[0], pose.t[1], pose.t[2]}, in);
 }
 
 FocalEstimate Detector::estimateFocal (const std::vector<Image>& images, const Camera& hint, const FocalOptions& options) {

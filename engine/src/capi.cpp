@@ -31,6 +31,23 @@ void rk_default_options (rk_options* o) {
 	o->min_extent = d.minExtent;
 	o->max_extent = d.maxExtent;
 	o->centre_share = d.centreShare;
+	o->coarse_segments = d.coarseSegments;
+	o->shift_pairs = d.shiftPairs;
+	o->starts = d.starts;
+	o->joint = d.joint;
+}
+
+double rk_pose_cost (rk_detector* d, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format,
+	const double K[4], const double pose[12], int32_t workWidth) {
+	try {
+		Pose p;
+		std::copy(pose, pose + 9, p.R.begin());
+		std::copy(pose + 9, pose + 12, p.t.begin());
+		return d->detector.poseCost({data, width, height, stride, PixelFormat(format)}, {K[0], K[1], K[2], K[3]}, p, workWidth);
+	}
+	catch (const std::exception&) {
+		return 1.0;
+	}
 }
 
 rk_detector* rk_detector_new (void) { return new rk_detector; }
@@ -51,6 +68,10 @@ void rk_detect (rk_detector* d, const uint8_t* data, int32_t width, int32_t heig
 	options.minExtent = o->min_extent;
 	options.maxExtent = o->max_extent;
 	options.centreShare = o->centre_share;
+	options.coarseSegments = o->coarse_segments;
+	options.shiftPairs = o->shift_pairs != 0;
+	options.starts = o->starts;
+	options.joint = o->joint;
 	try {
 		ViewResult r = d->detector.detect(image, camera, options);
 		out->ok = r.ok;
@@ -80,6 +101,65 @@ void rk_detect (rk_detector* d, const uint8_t* data, int32_t width, int32_t heig
 		out->ok = 0;
 		copyError(out->error, e.what());
 	}
+}
+
+int32_t rk_detect_segments (rk_detector* d, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format,
+	const double K[4], const rk_options* o, rk_view* out, float* segments, int32_t capacity) {
+	int32_t written = 0;
+	std::memset(out, 0, sizeof(*out));
+	Image image{data, width, height, stride, PixelFormat(format)};
+	Camera camera{K[0], K[1], K[2], K[3]};
+	DetectOptions options;
+	options.search = o->search ? Search::Local : Search::Wide;
+	std::copy(o->prior, o->prior + 9, options.prior.R.begin());
+	std::copy(o->prior + 9, o->prior + 12, options.prior.t.begin());
+	options.workWidth = o->work_width;
+	options.sampleSize = o->sample_size;
+	options.seed = o->seed;
+	options.minExtent = o->min_extent;
+	options.maxExtent = o->max_extent;
+	options.centreShare = o->centre_share;
+	options.coarseSegments = o->coarse_segments;
+	options.shiftPairs = o->shift_pairs != 0;
+	options.starts = o->starts;
+	options.joint = o->joint;
+	options.keepSegments = true;
+	try {
+		ViewResult r = d->detector.detect(image, camera, options);
+		out->ok = r.ok;
+		copyError(out->error, r.error);
+		std::copy(r.pose.R.begin(), r.pose.R.end(), out->pose);
+		std::copy(r.pose.t.begin(), r.pose.t.end(), out->pose + 9);
+		out->lattice_cost = r.latticeCost;
+		out->segment_count = r.segmentCount;
+		out->family_segments = r.familySegments;
+		out->camera[0] = r.camera.fx;
+		out->camera[1] = r.camera.fy;
+		out->camera[2] = r.camera.cx;
+		out->camera[3] = r.camera.cy;
+		out->support = r.support;
+		out->ms_segments = r.timings.segments;
+		out->ms_axes = r.timings.axes;
+		out->ms_position = r.timings.position;
+		out->ms_sampling = r.timings.sampling;
+		for (const Segment& g : r.segments) {
+			if (written >= capacity)
+				break;
+			float* p = segments + 6 * written++;
+			p[0] = g.x1; p[1] = g.y1; p[2] = g.x2; p[3] = g.y2; p[4] = g.weight; p[5] = float(g.family);
+		}
+		out->sample_count = int32_t(std::min<size_t>(r.samples.size(), 27));
+		for (int i = 0; i < out->sample_count; i++) {
+			const FaceletSample& s = r.samples[i];
+			out->samples[i] = {s.facelet, s.valid, s.pixels, {s.lab[0], s.lab[1], s.lab[2]}, {}};
+			std::copy(s.quad.begin(), s.quad.end(), out->samples[i].quad);
+		}
+	}
+	catch (const std::exception& e) {
+		out->ok = 0;
+		copyError(out->error, e.what());
+	}
+	return written;
 }
 
 void rk_estimate_focal (rk_detector* d, int32_t count, const uint8_t* const* data, int32_t width, int32_t height,

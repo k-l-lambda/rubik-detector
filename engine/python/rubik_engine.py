@@ -14,7 +14,9 @@ class Sample(ctypes.Structure):
 class Options(ctypes.Structure):
 	_fields_ = [("search", ctypes.c_int32), ("prior", ctypes.c_double * 12), ("work_width", ctypes.c_int32),
 		("sample_size", ctypes.c_double), ("seed", ctypes.c_uint64),
-		("min_extent", ctypes.c_double), ("max_extent", ctypes.c_double), ("centre_share", ctypes.c_double)]
+		("min_extent", ctypes.c_double), ("max_extent", ctypes.c_double), ("centre_share", ctypes.c_double),
+		("coarse_segments", ctypes.c_int32), ("shift_pairs", ctypes.c_int32),
+		("starts", ctypes.c_int32), ("joint", ctypes.c_int32)]
 
 
 class View(ctypes.Structure):
@@ -74,6 +76,12 @@ _lib.rk_score_model.restype = ctypes.c_int32
 _lib.rk_conflicts.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(Sample), ctypes.c_int32, ctypes.c_int32, ctypes.c_char_p,
 	ctypes.c_double, ctypes.POINTER(ctypes.c_int32 * 27)]
 _lib.rk_conflicts.restype = ctypes.c_int32
+_lib.rk_detect_segments.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
+	ctypes.POINTER(ctypes.c_double * 4), ctypes.POINTER(Options), ctypes.POINTER(View), ctypes.c_void_p, ctypes.c_int32]
+_lib.rk_detect_segments.restype = ctypes.c_int32
+_lib.rk_pose_cost.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
+	ctypes.POINTER(ctypes.c_double * 4), ctypes.POINTER(ctypes.c_double * 12), ctypes.c_int32]
+_lib.rk_pose_cost.restype = ctypes.c_double
 _lib.rk_apply_moves.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
 _lib.rk_compare_states.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
 
@@ -96,20 +104,38 @@ class Detector:
 		if getattr(self, "_d", None):
 			_lib.rk_detector_free(self._d)
 
-	def detect(self, image_bgr, K, work_width=1024, prior=None, seed=0):
-		"""image_bgr: (H, W, 3) uint8 (cv2.imread); K: 3×3 for this image. prior: (R, t) for a local search."""
+	def detect(self, image_bgr, K, work_width=1024, prior=None, seed=0, keep_segments=False, **effort):
+		"""image_bgr: (H, W, 3) uint8 (cv2.imread); K: 3×3 for this image. prior: (R, t) for a local search.
+		effort: coarse_segments, shift_pairs, starts, joint (DetectOptions search effort).
+		keep_segments: also return "segments_list" (x1 y1 x2 y2 weight family per row, input pixels)."""
 		img = np.ascontiguousarray(image_bgr, np.uint8)
 		o = Options()
 		_lib.rk_default_options(ctypes.byref(o))
 		o.work_width = work_width
 		o.seed = seed
+		for key, value in effort.items():
+			setattr(o, key, int(value))
 		if prior is not None:
 			o.search = 1
 			o.prior[:] = list(np.asarray(prior[0], float).ravel()) + list(np.asarray(prior[1], float))
 		k = (ctypes.c_double * 4)(K[0][0], K[1][1], K[0][2], K[1][2])
 		v = View()
+		if keep_segments:
+			buf = np.zeros((8192, 6), np.float32)
+			n = _lib.rk_detect_segments(self._d, img.ctypes.data, img.shape[1], img.shape[0], img.strides[0], 0, ctypes.byref(k), ctypes.byref(o),
+				ctypes.byref(v), buf.ctypes.data, len(buf))
+			out = view_dict(v)
+			out["segments_list"] = buf[:n].copy()
+			return out
 		_lib.rk_detect(self._d, img.ctypes.data, img.shape[1], img.shape[0], img.strides[0], 0, ctypes.byref(k), ctypes.byref(o), ctypes.byref(v))
 		return view_dict(v)
+
+	def pose_cost(self, image_bgr, K, R, t, work_width=1024):
+		"""debugging: the lattice cost of a given pose, no search"""
+		img = np.ascontiguousarray(image_bgr, np.uint8)
+		k = (ctypes.c_double * 4)(K[0][0], K[1][1], K[0][2], K[1][2])
+		pose = (ctypes.c_double * 12)(*(list(np.asarray(R, float).ravel()) + list(np.asarray(t, float))))
+		return _lib.rk_pose_cost(self._d, img.ctypes.data, img.shape[1], img.shape[0], img.strides[0], 0, ctypes.byref(k), ctypes.byref(pose), work_width)
 
 	def estimate_focal(self, images_bgr, coarse_width=0, coarse_steps=0, refine_steps=0, work_width=0):
 		# Focal length from one or more same-size BGR images of one camera: camera (fx fy cx cy), ratio (fx / long

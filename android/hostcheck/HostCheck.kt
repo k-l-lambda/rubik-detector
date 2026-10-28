@@ -14,24 +14,33 @@ import javax.imageio.ImageIO
 fun main(args: Array<String>) {
 	val dir = File(args[0])
 	val scale = args.getOrNull(1)?.toDouble() ?: 1.0
-	val labels = dir.resolve("labels.json").readText()
-	val fps = Regex("\"fps\":\\s*([0-9.]+)").find(labels)!!.groupValues[1].toDouble()
-	val facelets = Regex("\"facelets\":\\s*\"([LRDUBF]{54})\"").findAll(labels).map { it.groupValues[1] }.toList()
+	// labels.json (a rendered video) or none (a real one: fps from argument 3, focal length from argument 4 or estimated)
+	val labelFile = dir.resolve("labels.json")
+	val labels = if (labelFile.exists()) labelFile.readText() else null
+	val fps = labels?.let { Regex("\"fps\":\\s*([0-9.]+)").find(it)!!.groupValues[1].toDouble() } ?: (args.getOrNull(2)?.toDouble() ?: 30.0)
+	val facelets = labels?.let { l -> Regex("\"facelets\":\\s*\"([LRDUBF]{54})\"").findAll(l).map { it.groupValues[1] }.toList() } ?: emptyList()
 	val frames = dir.listFiles { f -> f.name.matches(Regex("frame\\d{4}\\.png")) }!!.sortedBy { it.name }
 	val n = frames.size
-	val truth = { i: Int -> facelets[1 + i] }   // cube.facelets first, then one per frame
+	val truth = { i: Int -> facelets.getOrNull(1 + i) }   // cube.facelets first, then one per frame
 	val arrive = { i: Int -> i / fps + 0.03 }
 
 	val detector = Detector()
 	val pipeline = Pipeline()
+	args.getOrNull(3)?.toDouble()?.let { pipeline.useFocal(it) }
+	var goodFrames = 0
+	var lostRuns = 0
+	var lostLongest = 0
+	var lostRun = 0
+	val modes = HashMap<String, Int>()
 	var free = arrive(0)
 	var last = -1
 	var stage: Stage? = null
+	var lastSnapshot: com.klstudio.rubikdetector.Snapshot? = null
 	var moves = 0
 	var processed = 0
 	var exactFollowing = 0
 	var following = 0
-	val buffer = ByteBuffer.allocateDirect(1024 * 768 * 4).order(ByteOrder.nativeOrder())
+	val buffer = ByteBuffer.allocateDirect(4096 * 4096 * 4).order(ByteOrder.nativeOrder())
 	while (true) {
 		var i = Math.floor((free - 0.03) * fps + 1e-9).toInt()
 		if (i <= last)
@@ -57,6 +66,20 @@ fun main(args: Array<String>) {
 		free = start + ms * scale / 1000
 		last = i
 		processed++
+		lastSnapshot = s
+		if (s.detection != null && s.stage != Stage.FOCAL) {
+			modes.merge(s.detection!!.mode, 1, Int::plus)
+			if (s.good) {
+				goodFrames++
+				if (lostRun > 0)
+					lostRuns++
+				lostRun = 0
+			}
+			else {
+				lostRun++
+				lostLongest = maxOf(lostLongest, lostRun)
+			}
+		}
 		if (s.stage != stage) {
 			println(String.format("%6.2f s  frame %4d  stage %s", free, i + 1, s.stage))
 			stage = s.stage
@@ -64,18 +87,43 @@ fun main(args: Array<String>) {
 		val f = s.follow
 		if (f != null) {
 			following++
-			val exact = Cube.faceMap(f.state, truth(i)) != null
+			val t = truth(i)
+			val exact = t != null && Cube.faceMap(f.state, t) != null
 			if (exact)
 				exactFollowing++
 			if (f.moves.size > moves) {
-				println(String.format("%6.2f s  frame %4d  turned %-6s → state %s", free, i + 1, f.moves.last(), if (exact) "exact" else "differs from the frame's labels"))
+				println(String.format("%6.2f s  frame %4d  turned %-6s → state %s", free, i + 1, f.moves.last(),
+					if (t == null) "(no labels)" else if (exact) "exact" else "differs from the frame's labels"))
 				moves = f.moves.size
 			}
 		}
 		if (s.events.isNotEmpty() && s.events.last().contains("global"))
 			println(String.format("%6.2f s  %s", free, s.events.last()))
 	}
-	println("$processed frames processed of $n; following on $following, state = the frame's labels on $exactFollowing " +
-		"(the rest: a turn not yet confirmed); focal ${pipeline.fx.toInt()} px")
+	println("$processed frames processed of $n; following on $following" +
+		(if (labels != null) ", state = the frame's labels on $exactFollowing (the rest: a turn not yet confirmed)" else "") +
+		"; focal ${pipeline.fx.toInt()} px")
+	lastSnapshot?.let { ls ->
+		val e = ls.estimate
+		println("end: stage ${ls.stage}, evidence ${ls.evidenceFrames} frames in ${ls.chains} chains, ${ls.covered}/54 facelets observed" +
+			(if (e != null) String.format(", estimate legal %b, min confidence %.2f, stable %d", e.legal, e.minConfidence, ls.stable) else ""))
+		if (e?.state != null && e.legal)
+			println("     state ${e.state}")
+		if (e != null && e.ok) {
+			val obs = pipeline.observations()
+			for (k in 0 until 54)
+				if (e.confidence[k] < 0.99) {
+					val p = e.probability[k]
+					val top = p.indices.sortedByDescending { p[it] }.take(2)
+					println(String.format("     facelet %2d (%c%d): state %c, confidence %.2f, posterior %c %.2f / %c %.2f, %d observations, Lab median (%.0f %.0f %.0f)",
+						k, Cube.FACES[k / 9], k % 9, e.state!![k], e.confidence[k], Cube.FACES[top[0]], p[top[0]], Cube.FACES[top[1]], p[top[1]], obs[k].size,
+						obs[k].map { it[0] }.sorted().getOrElse(obs[k].size / 2) { 0f }, obs[k].map { it[1] }.sorted().getOrElse(obs[k].size / 2) { 0f },
+						obs[k].map { it[2] }.sorted().getOrElse(obs[k].size / 2) { 0f }))
+				}
+		}
+	}
+	val tracked = modes.values.sum()
+	println(String.format("HUD: good fit on %d/%d processed frames (%.0f%%); %d lost spells, longest %d frames; modes %s",
+		goodFrames, tracked, 100.0 * goodFrames / maxOf(1, tracked), lostRuns, lostLongest, modes))
 	detector.close()
 }

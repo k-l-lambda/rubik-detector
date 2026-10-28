@@ -31,6 +31,7 @@ typedef struct {
 	double sample_size;
 	uint64_t seed;
 	double min_extent, max_extent, centre_share;
+	int32_t coarse_segments, shift_pairs, starts, joint;   // DetectOptions search effort
 } rk_options;
 
 typedef struct {
@@ -52,6 +53,15 @@ RK_API void rk_detector_free (rk_detector* detector);
 // format: 0 BGR, 1 RGB, 2 BGRA, 3 RGBA; K: fx fy cx cy in pixels of this image (cx, cy <= 0: centre; fx must be known — rk_estimate_focal)
 RK_API void rk_detect (rk_detector* detector, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format,
 	const double K[4], const rk_options* options, rk_view* out);
+
+// rk_detect, also writing up to `capacity` segments (x1 y1 x2 y2 weight family, 6 floats each) to `segments`;
+// returns the number written (debug overlays)
+RK_API int32_t rk_detect_segments (rk_detector* detector, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format,
+	const double K[4], const rk_options* options, rk_view* out, float* segments, int32_t capacity);
+
+// Detector::poseCost (debugging)
+RK_API double rk_pose_cost (rk_detector* detector, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format,
+	const double K[4], const double pose[12], int32_t work_width);
 
 // colours at a known pose (R then t, input camera); returns the number of samples written to out (27)
 RK_API int32_t rk_sample_at (rk_detector* detector, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format,
