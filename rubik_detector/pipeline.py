@@ -25,7 +25,8 @@ def geometry_error(pred_quads, truth_quads):
 
 def run(scenario, geom="line", classifier="legal"):
 	out = {"group": scenario.group, "kind": scenario.kind, "geometry": geom, "classifier": classifier, "views": []}
-	stage = geometry.oracle if geom == "oracle" else geometry.LineGeometry()
+	# "line": the line-segment geometry with the wide position search; "line-extent": with the first version's search
+	stage = geometry.oracle if geom == "oracle" else geometry.LineGeometry(search="extent" if geom == "line-extent" else "wide")
 	obs, results = [], []
 	t_all = time.perf_counter()
 	for view in scenario.views:

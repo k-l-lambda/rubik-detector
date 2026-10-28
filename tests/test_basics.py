@@ -52,6 +52,31 @@ def test_g01_render_exact(geom):
 
 
 @needs_data
+def test_batched_lattice_cost_matches_scalar():
+	view = data.load("g01", "render").views[0]
+	g = geometry.LineGeometry()(view)
+	segs, w, fam = g["debug"]["segments"], g["debug"]["weights"], g["debug"]["families"]
+	m = fam >= 0
+	r1, r2 = geometry._rays(view.K, segs[m, :2]), geometry._rays(view.K, segs[m, 2:])
+	T = g["t"] + np.random.default_rng(0).normal(0, 1.0, (200, 3))
+	for tol in (0.35, 0.5):
+		scalar = [geometry.lattice_cost(g["R"], t, r1, r2, fam[m], w[m], tol=tol) for t in T]
+		assert np.allclose(scalar, geometry.lattice_cost_batch(g["R"], T, r1, r2, fam[m], w[m], tol=tol), atol=1e-12)
+
+
+@needs_data
+@pytest.mark.parametrize("group,kind,view", [("g02", "bg", 3), ("n10", "hand", 2)])
+def test_wide_search_recovers_hard_views(group, kind, view):
+	"""Views the first search got wrong: background lines along the cube axes inflated the segments' extent (g02 bg,
+	start ~3× too close), and axes a few degrees off made a wrong centre cheaper until the rotation was refined
+	jointly (n10 hand, one cubie off)."""
+	s = data.load(group, kind, include_failed=True)
+	v = s.views[view - 1]
+	g = geometry.LineGeometry()(v)
+	assert pipeline.geometry_error(g["quads"], v.quads)["max"] < 0.6
+
+
+@needs_data
 def test_fusion_finds_identity_with_true_frames():
 	s = data.load("g02", "render")
 	obs = []
