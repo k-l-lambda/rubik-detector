@@ -18,6 +18,7 @@ apps. The Python package stays the reference; `tools/parity.py` checks the engin
 	tools/state_tracker.py     app-layer prototype on a camera stream: FOV → evidence of every frame → Bayesian colour
 	                           posteriors → legal state (from five faces), panel top right
 	tools/follow_tracker.py    app-layer prototype: acquire the state, lock it, then follow face turns (nearest states)
+	../android/                Android prototype app (Kotlin, Compose, CameraX) running that pipeline on the camera
 
 Build: `cmake -S engine -B engine/build && cmake --build engine/build -j` (static `librubik_engine.a`, shared
 `librubik_engine.so`, `rubik_engine_tests`). `-ffp-contract=off` is set on purpose: ARM64 would otherwise fuse a·b+c
