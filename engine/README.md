@@ -17,6 +17,7 @@ apps. The Python package stays the reference; `tools/parity.py` checks the engin
 	tools/hud_video.py         a detection HUD on a video, with the engine's real latency (× a phone factor)
 	tools/state_tracker.py     app-layer prototype on a camera stream: FOV → evidence of every frame → Bayesian colour
 	                           posteriors → legal state (from five faces), panel top right
+	tools/follow_tracker.py    app-layer prototype: acquire the state, lock it, then follow face turns (nearest states)
 
 Build: `cmake -S engine -B engine/build && cmake --build engine/build -j` (static `librubik_engine.a`, shared
 `librubik_engine.so`, `rubik_engine_tests`). `-ffp-contract=off` is set on purpose: ARM64 would otherwise fuse a·b+c
@@ -66,6 +67,15 @@ approximated by the best legal state without that colour there). On v102 at 30 f
 camera 30 ms): the first frame 58 %, the fifth face 58 % on colour alone but 98 % under the legal constraint; the state
 exact from two holds at ~6 s (three holds ~11.5 s); at 3× latency still exact from five faces
 (14 s). Where two completions tie (a 3-cycle of the hidden face's edges) their facelets say 0.5.
+
+**Following turns (`tools/follow_tracker.py`).** Acquire as above; lock when the legal state is observed on all 54
+facelets, every confidence ≥ 0.99, the same in 3 estimates in a row (a five-face completion can be confidently wrong
+while the colour clusters are unsettled: on v103 it flipped between states, once at confidence 1.00 with 4 wrong).
+Then per well-fitted frame (lattice cost ≤ 1.5 × the recent median: mid-turn fits fail it) `rk_score_model` with the
+locked model scores S and its 18 single turns over the 24 view renamings (prior 10 nll per turn; < 1 ms); the 243
+two-turn states only when nothing one turn away explains the frame. A new state replaces S when it wins by ≥ 15 on 2
+consecutive frames (or ≥ 80 on one); unexplained for 6 frames: lost, acquire again. v103 (klstudio `?videoTwists=8`,
+30 fps): all 8 turns followed, no false switch, 0.2–1.2 s after each turn ends at 1× latency (1.3–2.3 s at 2×).
 
 **Turns on a known state.** Keep the state and the `ColourModel` from the estimate. Per new frame (tracked pose,
 `sample`), `scoreStates(model, samples, g, {state, applyMoves(state, m) for m in faceTurnNames()})`: the lowest wins;

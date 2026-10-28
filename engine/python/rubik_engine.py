@@ -43,7 +43,8 @@ class StateEx(ctypes.Structure):
 		("legal", ctypes.c_int32), ("exact", ctypes.c_int32), ("cost", ctypes.c_double), ("min_posterior", ctypes.c_double),
 		("posterior", ctypes.c_double * 54), ("probability", (ctypes.c_double * 6) * 54), ("confidence", ctypes.c_double * 54), ("min_confidence", ctypes.c_double),
 		("observed", ctypes.c_int32 * 54),
-		("coverage", ctypes.c_int32), ("corrected", ctypes.c_int32 * 54), ("corrected_count", ctypes.c_int32), ("fusion_cost", ctypes.c_double)]
+		("coverage", ctypes.c_int32), ("corrected", ctypes.c_int32 * 54), ("corrected_count", ctypes.c_int32), ("fusion_cost", ctypes.c_double),
+		("model_mean", (ctypes.c_double * 4) * 6), ("model_var", (ctypes.c_double * 4) * 6)]
 
 
 class EstimateOptions(ctypes.Structure):
@@ -67,6 +68,9 @@ _lib.rk_estimate_focal.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.POINT
 	ctypes.POINTER(ctypes.c_int32), ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int32 * 4), ctypes.POINTER(Focal)]
 _lib.rk_estimate_ex.argtypes = [ctypes.c_int32, ctypes.POINTER(Sample), ctypes.POINTER(ctypes.c_int32), ctypes.POINTER(ctypes.c_int32),
 	ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(EstimateOptions), ctypes.POINTER(StateEx), ctypes.c_void_p]
+_lib.rk_score_model.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(Sample), ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
+	ctypes.c_char_p, ctypes.POINTER(ctypes.c_double)]
+_lib.rk_score_model.restype = ctypes.c_int32
 _lib.rk_apply_moves.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
 _lib.rk_compare_states.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
 
@@ -167,7 +171,21 @@ def estimate(views, rotations=None, require_all_faces=True, legal=True, weights=
 	return {"ok": bool(out.ok), "error": out.error.decode(), "state": out.state.decode(), "legal": bool(out.legal), "exact": bool(out.exact),
 		"cost": out.cost, "min_posterior": out.min_posterior, "posterior": list(out.posterior), "corrected": list(out.corrected[:out.corrected_count]),
 		"probability": np.array(out.probability), "confidence": list(out.confidence), "min_confidence": out.min_confidence, "observed": [bool(x) for x in out.observed], "coverage": out.coverage,
-		"fusion_cost": out.fusion_cost, "rotations": list(rot_out)}
+		"fusion_cost": out.fusion_cost, "rotations": list(rot_out),
+		"model": {"mean": np.array(out.model_mean), "var": np.array(out.model_var)}}
+
+
+def score_model(model, view, rotation, states):
+	"""Negative log-likelihoods (lower = better) of candidate states (common frame) for one view's samples placed by
+	`rotation`, under a colour model kept from an estimate (estimate(...)["model"])."""
+	mean = np.ascontiguousarray(model["mean"], dtype=np.float64)
+	var = np.ascontiguousarray(model["var"], dtype=np.float64)
+	raw = view["_raw"]
+	scores = (ctypes.c_double * len(states))()
+	if not _lib.rk_score_model(mean.ctypes.data, var.ctypes.data, raw.samples, raw.sample_count, rotation, len(states),
+			"".join(states).encode(), scores):
+		raise ValueError("bad input")
+	return np.array(scores)
 
 
 def apply_moves(state, moves):

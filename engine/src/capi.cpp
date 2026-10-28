@@ -291,6 +291,11 @@ void rk_estimate_ex (int32_t views, const rk_sample* samples, const int32_t* cou
 		for (int k = 0; k < 54; k++)
 			std::copy(e.probability[k].begin(), e.probability[k].end(), out->probability[k]);
 		std::copy(e.confidence.begin(), e.confidence.end(), out->confidence);
+		for (int c = 0; c < 6; c++)
+			for (int d = 0; d < 4; d++) {
+				out->model_mean[c][d] = e.model.mean[c][d];
+				out->model_var[c][d] = e.model.var[c][d];
+			}
 		out->min_confidence = e.minConfidence;
 		out->corrected_count = int32_t(e.corrected.size());
 		std::copy(e.corrected.begin(), e.corrected.end(), out->corrected);
@@ -298,6 +303,37 @@ void rk_estimate_ex (int32_t views, const rk_sample* samples, const int32_t* cou
 	catch (const std::exception& ex) {
 		out->ok = 0;
 		copyError(out->error, ex.what());
+	}
+}
+
+int32_t rk_score_model (const double mean[6][4], const double var[6][4], const rk_sample* samples, int32_t count,
+	int32_t rotation, int32_t nStates, const char* states, double* scores) {
+	try {
+		ColourModel model;
+		for (int c = 0; c < 6; c++)
+			for (int d = 0; d < 4; d++) {
+				model.mean[c][d] = mean[c][d];
+				model.var[c][d] = var[c][d];
+			}
+		std::vector<FaceletSample> list;
+		for (int i = 0; i < count; i++) {
+			FaceletSample s;
+			s.facelet = samples[i].facelet;
+			s.valid = samples[i].valid != 0;
+			s.pixels = samples[i].pixels;
+			s.lab = {samples[i].lab[0], samples[i].lab[1], samples[i].lab[2]};
+			std::copy(samples[i].quad, samples[i].quad + 8, s.quad.begin());
+			list.push_back(s);
+		}
+		std::vector<std::string> candidates;
+		for (int i = 0; i < nStates; i++)
+			candidates.emplace_back(states + 54 * i, 54);
+		std::vector<double> r = scoreStates(model, list, rotation, candidates);
+		std::copy(r.begin(), r.end(), scores);
+		return 1;
+	}
+	catch (const std::exception&) {
+		return 0;
 	}
 }
 

@@ -22,8 +22,9 @@ the app --camera-ms later. Two workers, each step costing its measured time × -
 Placing frames in one cube frame: consecutive good detections within --link-deg of each other up to a renaming of
 the view frame, whose colours agree (median ΔE ≤ --agree-colour), form a chain and inherit its placement through the
 renaming. A chain counts once --confirm frames agree (default 1); it is then placed by colour against the evidence so far (≥ 9
-overlapping facelets; if it can't be, from a later frame). Evidence needs a lattice cost ≤ --evidence-cost (tracking
-accepts up to --fallback-cost: a mid-turn fit near that limit can be wrong).
+overlapping facelets; if it can't be, from a later frame). Evidence needs a lattice cost ≤ --evidence-cost and ≤
+--relative-cost × the median of the recent good fits (tracking accepts up to --fallback-cost: a mid-turn fit can be
+well under it and still wrong).
 
 Output (downsampled to --out-fps to keep it small; the pipeline runs on every camera frame): OUT/frame*.png, OUT/
 state.mp4, OUT/log.json. HUD: the stickers of the latest detection ready by the frame's arrival; top right the state
@@ -88,6 +89,18 @@ class Tracker:
 		self.rotations = []
 		self.chains = 0
 		self.pending = []           # frames of the current chain until it is confirmed and placed
+		self.collect = True         # placing frames as evidence (off: tracking only, e.g. once a state is followed)
+		self.costs = []             # lattice costs of good detections, for the relative evidence gate
+
+	def fits_well(self, r):
+		"""evidence-grade fit: lattice cost ≤ --evidence-cost and ≤ --relative-cost × the median of the recent good
+		fits (the cost level depends on the cube and the scene; a fit mid-turn can be good in absolute terms and still
+		twice the usual)"""
+		recent = self.costs[-30:]
+		limit = self.a.evidence_cost
+		if len(recent) >= 3:
+			limit = min(limit, self.a.relative_cost * float(np.median(recent)))
+		return r["lattice_cost"] <= limit
 
 	def calibrate(self, frame):
 		f = self.det.estimate_focal([frame])
@@ -137,6 +150,8 @@ class Tracker:
 			mode = "fallback" if mode == "local" else "wide"
 		good = r["ok"] and r["lattice_cost"] <= self.a.fallback_cost
 		r["frame"], r["mode"] = index, mode
+		if good:
+			self.costs.append(r["lattice_cost"])
 		event = {"mode": mode, "good": good, "cost": r["lattice_cost"], "result": r}
 		if not good:
 			self.prev = None
@@ -160,7 +175,10 @@ class Tracker:
 			r["rel"] = IDENTITY
 			self.pending = []
 		self.prev = r
-		if r["lattice_cost"] > self.a.evidence_cost:
+		if not self.collect:
+			return event
+		if not self.fits_well(r):
+			event["weak_fit"] = True
 			return event   # tracked, not evidence
 		if r["rotation"] is not None:
 			self.frames.append(r)
@@ -200,15 +218,17 @@ def estimate(frames, rotations, args):
 	return e
 
 
-def panel(img, e, obs, stage, truth, scale):
-	"""the state panel, top right. e: the latest estimate (or None); obs: per common facelet its observations' Lab"""
+def panel(img, e, obs, stage, truth, scale, colours=None, extra=(), numbers=True):
+	"""the state panel, top right. e: the latest estimate (or None); obs: per common facelet its observations' Lab;
+	colours: BGR per colour letter instead of the observations' medians; extra: text lines after the stage"""
 	cell = int(26 * scale)
 	pad = int(10 * scale)
 	gap = int(3 * scale)
 	W, H = 4 * 3 * cell + 3 * gap, 3 * 3 * cell + 2 * gap
-	lines = [f"stage: {stage}"]
+	lines = [f"stage: {stage}"] + list(extra)
 	if e and e["ok"]:
-		lines.append(f"evidence: {e['frames']} frames in {e['chains']} chains, {e['covered']}/54 facelets observed")
+		if "frames" in e:
+			lines.append(f"evidence: {e['frames']} frames in {e['chains']} chains, {e['covered']}/54 facelets observed")
 		probs = e["probability"]
 		best = probs.argmax(1)
 		pbest = probs.max(1)
@@ -233,8 +253,8 @@ def panel(img, e, obs, stage, truth, scale):
 	cv2.rectangle(overlay, (x0, y0), (x0 + box_w, y0 + box_h), (20, 20, 20), -1)
 	img[:] = cv2.addWeighted(overlay, 0.75, img, 0.25, 0)
 	# colour of each cluster: the median Lab of the observations of the facelets it holds
-	label_colour = {}
-	if probs is not None:
+	label_colour = dict(colours or {})
+	if probs is not None and not colours:
 		lab_of = letters if letters else [FACES[c] for c in best]
 		for c in FACES:
 			labs = [lab for k in range(54) if lab_of[k] == c for lab in obs[k]]
@@ -267,7 +287,7 @@ def panel(img, e, obs, stage, truth, scale):
 				elif letters and FACES[best[k]] != letter:
 					# the legal state overrides the best cluster here
 					cv2.line(img, (p1[0] - cell // 3, p0[1] + 2), (p1[0] - 2, p0[1] + cell // 3), (40, 40, 230), max(1, round(2 * scale)))
-				label = "99" if p >= 0.995 else f"{int(p * 100):2d}"
+				label = ("99" if p >= 0.995 else f"{int(p * 100):2d}") if numbers else ""
 			else:
 				label = "?"
 			lum = sum(colour) / 3
@@ -288,6 +308,7 @@ def main():
 	ap.add_argument("--known-fov", action="store_true", help="use the labels' K instead of estimating it")
 	ap.add_argument("--fallback-cost", type=float, default=0.15)
 	ap.add_argument("--evidence-cost", type=float, default=0.09, help="lattice cost limit for evidence (tracking: --fallback-cost)")
+	ap.add_argument("--relative-cost", type=float, default=1.5, help="evidence: lattice cost ≤ this × the median of recent good fits")
 	ap.add_argument("--confirm", type=int, default=1, help="frames of a chain that must agree before it counts (with unknown "
 		"reliability a lone frame is weak evidence anyway: 58 %%)")
 	ap.add_argument("--link-deg", type=float, default=20.0)

@@ -89,6 +89,8 @@ typedef struct {
 	int32_t corrected[54];
 	int32_t corrected_count;
 	double fusion_cost;
+	double model_mean[6][4];     // the fitted colour model (ColourModel), for rk_score_model
+	double model_var[6][4];
 } rk_state_ex;
 
 typedef struct {
@@ -103,6 +105,12 @@ typedef struct {
 // its own), rotations_out per view (NULL = not wanted).
 RK_API void rk_estimate_ex (int32_t views, const rk_sample* samples, const int32_t* counts, const int32_t* rotations,
 	const double* weights, const int32_t* groups, const rk_estimate_options* options, rk_state_ex* out, int32_t* rotations_out);
+
+// Score candidate states (n_states × 54 letters) against one view's samples placed by `rotation`, under a colour
+// model kept from an estimate (rk_state_ex model_mean / model_var): negative log-likelihoods, lower = better
+// (scoreStates). Returns 0 on bad input.
+RK_API int32_t rk_score_model (const double mean[6][4], const double var[6][4], const rk_sample* samples, int32_t count,
+	int32_t rotation, int32_t n_states, const char* states, double* scores);
 
 // Fuse and estimate as rk_estimate, then score candidate states (n_states × 54 letters, common frame) against the
 // samples of view `view` under the fitted colour model: scores[i] = negative log-likelihood (lower = better).
