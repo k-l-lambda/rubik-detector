@@ -31,6 +31,10 @@ void rk_default_options (rk_options* o) {
 	o->min_extent = d.minExtent;
 	o->max_extent = d.maxExtent;
 	o->centre_share = d.centreShare;
+	o->focal_min = d.focalMin;
+	o->focal_max = d.focalMax;
+	o->focal_steps = d.focalSteps;
+	o->focal_refine = d.focalRefine;
 }
 
 rk_detector* rk_detector_new (void) { return new rk_detector; }
@@ -51,6 +55,10 @@ void rk_detect (rk_detector* d, const uint8_t* data, int32_t width, int32_t heig
 	options.minExtent = o->min_extent;
 	options.maxExtent = o->max_extent;
 	options.centreShare = o->centre_share;
+	options.focalMin = o->focal_min;
+	options.focalMax = o->focal_max;
+	options.focalSteps = o->focal_steps;
+	options.focalRefine = o->focal_refine;
 	try {
 		ViewResult r = d->detector.detect(image, camera, options);
 		out->ok = r.ok;
@@ -60,6 +68,12 @@ void rk_detect (rk_detector* d, const uint8_t* data, int32_t width, int32_t heig
 		out->lattice_cost = r.latticeCost;
 		out->segment_count = r.segmentCount;
 		out->family_segments = r.familySegments;
+		out->camera[0] = r.camera.fx;
+		out->camera[1] = r.camera.fy;
+		out->camera[2] = r.camera.cx;
+		out->camera[3] = r.camera.cy;
+		out->focal_estimated = r.focalEstimated;
+		out->focal_tried = r.focalTried;
 		out->ms_segments = r.timings.segments;
 		out->ms_axes = r.timings.axes;
 		out->ms_position = r.timings.position;

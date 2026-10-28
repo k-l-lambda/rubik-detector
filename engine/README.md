@@ -23,6 +23,7 @@ and the iterative searches amplify last-bit differences.
 | stage | call | cost (desktop, 1024 px) |
 |---|---|---|
 | one photo / frame → pose + 27 facelet colours | `Detector::detect(image, camera, {Search::Wide})` | ~0.56 s |
+| one photo, unknown camera (`Camera.fx = 0`) | `Detector::detect` estimates the focal length | ~4–5 s (14 solves) |
 | tracked frame from a prior pose | `Detector::detect(image, camera, {Search::Local, prior})` | ~0.22 s (position 58 ms) |
 | colours at a known pose | `Detector::sample(image, camera, pose)` | ~11 ms (Lab only inside the 27 patches) |
 | views → one cube frame | `Evidence::addView(samples, rotation = -1)`, `Evidence::fuse()` | ms |
@@ -64,4 +65,10 @@ so an app should score frames where the turn has settled (lattice cost back to n
 - Not bit-identical to Python, by design: RANSAC uses its own generator (Python draws from numpy's PCG64), and
   BGR→Lab uses the exact formula rather than OpenCV's 16-bit LUT interpolation (≤ 0.5 ΔLab). Results agree at the
   level of states and sticker positions.
+- Unknown focal length (`tools/focal_check.py`, 2026-10-28; 80 groups of renders/edits with K hidden): estimated fx
+  within 2–3 % (median), 7–10 % (p95), 19 % (max) of the truth; all 240 views located, all 80 groups exact. The
+  criterion is the share of *all* segment weight the lattice explains — the lattice cost alone (averaged over the
+  segments assigned to the axes) picked fx 2–5× too long, where few segments fit and fit well (9/40 render groups).
+  A real photo without EXIF (`klstudio/footages.local/rubik-samples/IMG_20190901_150650.jpg`, square crop): fx ≈
+  1.1 × width, the 27 visible stickers sampled correctly.
 - Speed: ~0.56 s per view vs ~4.6 s in Python on the same machine (single thread each).

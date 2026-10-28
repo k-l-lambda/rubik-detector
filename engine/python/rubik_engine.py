@@ -14,12 +14,14 @@ class Sample(ctypes.Structure):
 class Options(ctypes.Structure):
 	_fields_ = [("search", ctypes.c_int32), ("prior", ctypes.c_double * 12), ("work_width", ctypes.c_int32),
 		("sample_size", ctypes.c_double), ("seed", ctypes.c_uint64),
-		("min_extent", ctypes.c_double), ("max_extent", ctypes.c_double), ("centre_share", ctypes.c_double)]
+		("min_extent", ctypes.c_double), ("max_extent", ctypes.c_double), ("centre_share", ctypes.c_double),
+		("focal_min", ctypes.c_double), ("focal_max", ctypes.c_double), ("focal_steps", ctypes.c_int32), ("focal_refine", ctypes.c_int32)]
 
 
 class View(ctypes.Structure):
 	_fields_ = [("ok", ctypes.c_int32), ("error", ctypes.c_char * 96), ("pose", ctypes.c_double * 12),
 		("lattice_cost", ctypes.c_double), ("segment_count", ctypes.c_int32), ("family_segments", ctypes.c_int32),
+		("camera", ctypes.c_double * 4), ("focal_estimated", ctypes.c_int32), ("focal_tried", ctypes.c_int32),
 		("ms_segments", ctypes.c_double), ("ms_axes", ctypes.c_double), ("ms_position", ctypes.c_double), ("ms_sampling", ctypes.c_double),
 		("sample_count", ctypes.c_int32), ("samples", Sample * 27)]
 
@@ -53,6 +55,7 @@ def view_dict(v):
 		for s in v.samples[:v.sample_count]]
 	return {"ok": bool(v.ok), "error": v.error.decode(), "R": np.array(v.pose[:9]).reshape(3, 3), "t": np.array(v.pose[9:]),
 		"lattice_cost": v.lattice_cost, "segments": v.segment_count, "family_segments": v.family_segments,
+		"camera": list(v.camera), "focal_estimated": bool(v.focal_estimated), "focal_tried": v.focal_tried,
 		"ms": {"segments": v.ms_segments, "axes": v.ms_axes, "position": v.ms_position, "sampling": v.ms_sampling},
 		"samples": samples, "_raw": v}
 
@@ -66,7 +69,8 @@ class Detector:
 			_lib.rk_detector_free(self._d)
 
 	def detect(self, image_bgr, K, work_width=1024, prior=None, seed=0):
-		"""image_bgr: (H, W, 3) uint8 (cv2.imread); K: 3×3 for this image. prior: (R, t) for a local search."""
+		"""image_bgr: (H, W, 3) uint8 (cv2.imread); K: 3×3 for this image, or None: focal length estimated, principal
+		point at the centre. prior: (R, t) for a local search."""
 		img = np.ascontiguousarray(image_bgr, np.uint8)
 		o = Options()
 		_lib.rk_default_options(ctypes.byref(o))
@@ -75,7 +79,7 @@ class Detector:
 		if prior is not None:
 			o.search = 1
 			o.prior[:] = list(np.asarray(prior[0], float).ravel()) + list(np.asarray(prior[1], float))
-		k = (ctypes.c_double * 4)(K[0][0], K[1][1], K[0][2], K[1][2])
+		k = (ctypes.c_double * 4)(*((0, 0, 0, 0) if K is None else (K[0][0], K[1][1], K[0][2], K[1][2])))
 		v = View()
 		_lib.rk_detect(self._d, img.ctypes.data, img.shape[1], img.shape[0], img.strides[0], 0, ctypes.byref(k), ctypes.byref(o), ctypes.byref(v))
 		return view_dict(v)

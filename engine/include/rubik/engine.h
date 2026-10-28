@@ -44,6 +44,8 @@ struct Image {
 
 struct Camera {
 	double fx = 0, fy = 0, cx = 0, cy = 0;   // pixels of the Image passed with it
+	// detect(): fx <= 0 = unknown focal length, estimated (DetectOptions::focal*); cx, cy <= 0 = the image centre;
+	// fy <= 0 = fx (square pixels)
 };
 
 struct Pose {
@@ -85,6 +87,12 @@ struct DetectOptions {
 	uint64_t seed = 0;                // RANSAC
 	// framing prior of the wide search: cube outline share of the long image side, centre share of each side
 	double minExtent = 0.2, maxExtent = 0.9, centreShare = 0.8;
+	// unknown focal length (Camera::fx <= 0): the one whose lattice fit explains the largest share of all segment
+	// weight (not the lowest lattice cost, which ignores the segments left out of the axes); fx / long side in [focalMin, focalMax] (≈ 90°–20° of
+	// horizontal view on the long side), focalSteps log-spaced, then focalRefine golden-section steps around the
+	// best. Each step is a full axes + position solve (~0.4 s); estimate once per camera and pass it from then on.
+	double focalMin = 0.45, focalMax = 2.6;
+	int focalSteps = 8, focalRefine = 4;
 };
 
 struct ViewResult {
@@ -94,6 +102,9 @@ struct ViewResult {
 	double latticeCost = 1;           // mean segment cost at the pose (0 perfect … 1 no support); lower = better fit
 	int segmentCount = 0;             // all detected / in an axis family
 	int familySegments = 0;
+	Camera camera;                    // the camera used (input pixels): as given, or with the estimated focal length
+	bool focalEstimated = false;
+	int focalTried = 0;               // solves run by the focal search
 	std::vector<FaceletSample> samples;   // the 27 visible facelets (view frame)
 	std::vector<Segment> segments;        // if keepSegments
 	Timings timings;

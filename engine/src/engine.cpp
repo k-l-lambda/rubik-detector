@@ -50,28 +50,28 @@ std::vector<FaceletSample> sampleAt (const LabImage& lab, const Intrinsics& K, c
 
 }
 
-ViewResult Detector::detect (const Image& image, const Camera& camera, const DetectOptions& options) {
-	ViewResult out;
-	if (!validImage(image)) {
-		out.error = "bad image";
-		return out;
-	}
-	auto t0 = std::chrono::steady_clock::now();
-	workingPlanes(image, options.workWidth, scratch->planes);
-	const double s = double(scratch->planes[0].width) / image.width;
-	const Intrinsics K = scaled(camera, s);
-	const int W = scratch->planes[0].width, H = scratch->planes[0].height;
-	LabImage lab = toLab(scratch->planes);
-	Segments segs = detectSegments(toGray(scratch->planes), lab, scratch->planes);
-	out.segmentCount = int(segs.s.size());
-	out.timings.segments = ms(t0);
-	if (segs.s.size() < 12) {
-		out.error = std::to_string(segs.s.size()) + " segments";
-		return out;
-	}
-	planeNormals(K, segs);
+namespace {
 
-	t0 = std::chrono::steady_clock::now();
+// everything after segment detection, for one camera: axes, signs, position
+struct Solve {
+	bool ok = false;
+	std::string error;
+	PoseFit fit;
+	Segments segs;
+	int familySegments = 0;
+	double msAxes = 0, msPosition = 0;
+	// share of all segment weight the lattice explains: Σ_family w·(1 - cost_i) / Σ_all w. Comparable across cameras,
+	// unlike the lattice cost, which averages over the family segments only: a wrong focal length assigns fewer
+	// segments to the axes, and those few can fit well
+	double support = 0;
+};
+
+Solve solveFor (const Segments& base, const Intrinsics& K, int W, int H, const DetectOptions& options) {
+	Solve out;
+	out.segs = base;
+	Segments& segs = out.segs;
+	planeNormals(K, segs);
+	auto t0 = std::chrono::steady_clock::now();
 	M3 R;
 	V3 t{0, 0, 0};
 	if (options.search == Search::Wide) {
@@ -109,17 +109,127 @@ ViewResult Detector::detect (const Image& image, const Camera& camera, const Det
 	}
 	for (int f : segs.family)
 		out.familySegments += f >= 0;
-	out.timings.axes = ms(t0);
-
-	t0 = std::chrono::steady_clock::now();
+	out.msAxes = ms(t0);
 	if (out.familySegments < 6) {
 		out.error = "too few segments along the cube axes";
 		return out;
 	}
+	t0 = std::chrono::steady_clock::now();
 	FramingPrior framing{options.minExtent, options.maxExtent, options.centreShare};
-	PoseFit fit = options.search == Search::Wide ? positionWide(K, R, segs, W, H, framing) : positionLocal(K, R, t, segs);
-	out.timings.position = ms(t0);
+	out.fit = options.search == Search::Wide ? positionWide(K, R, segs, W, H, framing) : positionLocal(K, R, t, segs);
+	out.msPosition = ms(t0);
+	double all = 0, fam = 0;
+	for (size_t i = 0; i < segs.w.size(); i++) {
+		all += segs.w[i];
+		if (segs.family[i] >= 0)
+			fam += segs.w[i];
+	}
+	out.support = all > 0 ? (1 - out.fit.cost) * fam / all : 0;
+	out.ok = true;
+	return out;
+}
 
+}
+
+ViewResult Detector::detect (const Image& image, const Camera& camera, const DetectOptions& options) {
+	ViewResult out;
+	if (!validImage(image)) {
+		out.error = "bad image";
+		return out;
+	}
+	auto t0 = std::chrono::steady_clock::now();
+	workingPlanes(image, options.workWidth, scratch->planes);
+	const double s = double(scratch->planes[0].width) / image.width;
+	const int W = scratch->planes[0].width, H = scratch->planes[0].height;
+	LabImage lab = toLab(scratch->planes);
+	Segments base = detectSegments(toGray(scratch->planes), lab, scratch->planes);
+	out.segmentCount = int(base.s.size());
+	out.timings.segments = ms(t0);
+	if (base.s.size() < 12) {
+		out.error = std::to_string(base.s.size()) + " segments";
+		return out;
+	}
+
+	// the camera: as given, or (fx <= 0) the focal length whose lattice fit explains the most segment weight. Square pixels, the principal point
+	// at the image centre unless given. Coarse: FOCAL_STEPS log-spaced fx / long side in [focalMin, focalMax];
+	// then golden-section on log fx between the best one's neighbours.
+	Camera cam = camera;
+	if (!(cam.cx > 0) || !(cam.cy > 0)) {
+		cam.cx = image.width / 2.0;
+		cam.cy = image.height / 2.0;
+	}
+	Solve best;
+	if (cam.fx > 0) {
+		if (!(cam.fy > 0))
+			cam.fy = cam.fx;
+		best = solveFor(base, scaled(cam, s), W, H, options);
+	}
+	else {
+		const double L = std::max(image.width, image.height);
+		auto at = [&](double logRatio) {
+			Camera c = cam;
+			c.fx = c.fy = std::exp(logRatio) * L;
+			Solve r = solveFor(base, scaled(c, s), W, H, options);
+			out.timings.axes += r.msAxes;
+			out.timings.position += r.msPosition;
+			out.focalTried++;
+			return std::make_pair(r.ok ? 1 - r.support : 2.0, r);   // minimized
+		};
+		const int steps = std::max(3, options.focalSteps);
+		const double lo = std::log(options.focalMin), hi = std::log(options.focalMax), step = (hi - lo) / (steps - 1);
+		std::vector<double> costs(steps);
+		std::vector<Solve> solves(steps);
+		for (int i = 0; i < steps; i++) {
+			auto r = at(lo + i * step);
+			costs[i] = r.first;
+			solves[i] = std::move(r.second);
+		}
+		int i = int(std::min_element(costs.begin(), costs.end()) - costs.begin());
+		double a = lo + std::max(i - 1, 0) * step, b = lo + std::min(i + 1, steps - 1) * step;
+		double bestCost = costs[i], bestLog = lo + i * step;
+		best = std::move(solves[i]);
+		const double g = 0.6180339887498949;
+		double x1 = b - g * (b - a), x2 = a + g * (b - a);
+		auto f1 = at(x1), f2 = at(x2);
+		for (int it = 0; it < options.focalRefine; it++) {
+			if (f1.first < f2.first) {
+				b = x2;
+				x2 = x1;
+				f2 = std::move(f1);
+				x1 = b - g * (b - a);
+				f1 = at(x1);
+			}
+			else {
+				a = x1;
+				x1 = x2;
+				f1 = std::move(f2);
+				x2 = a + g * (b - a);
+				f2 = at(x2);
+			}
+		}
+		for (auto* f : {&f1, &f2}) {
+			double x = f == &f1 ? x1 : x2;
+			if (f->first < bestCost) {
+				bestCost = f->first;
+				bestLog = x;
+				best = std::move(f->second);
+			}
+		}
+		cam.fx = cam.fy = std::exp(bestLog) * L;
+		out.focalEstimated = true;
+	}
+	out.camera = cam;
+	out.familySegments = best.familySegments;
+	if (camera.fx > 0) {
+		out.timings.axes = best.msAxes;
+		out.timings.position = best.msPosition;
+	}
+	if (!best.ok) {
+		out.error = best.error;
+		return out;
+	}
+	const Intrinsics K = scaled(cam, s);
+	const PoseFit& fit = best.fit;
 	t0 = std::chrono::steady_clock::now();
 	out.samples = sampleAt(lab, K, fit.R, fit.t, options.sampleSize, s);
 	out.timings.sampling = ms(t0);
@@ -127,9 +237,9 @@ ViewResult Detector::detect (const Image& image, const Camera& camera, const Det
 	out.pose.t = {fit.t.x, fit.t.y, fit.t.z};
 	out.latticeCost = fit.cost;
 	if (options.keepSegments)
-		for (size_t i = 0; i < segs.s.size(); i++)
-			out.segments.push_back({float(segs.s[i][0] / s), float(segs.s[i][1] / s), float(segs.s[i][2] / s), float(segs.s[i][3] / s),
-				float(segs.w[i]), segs.family[i]});
+		for (size_t i = 0; i < best.segs.s.size(); i++)
+			out.segments.push_back({float(best.segs.s[i][0] / s), float(best.segs.s[i][1] / s), float(best.segs.s[i][2] / s), float(best.segs.s[i][3] / s),
+				float(best.segs.w[i]), best.segs.family[i]});
 	out.ok = true;
 	return out;
 }

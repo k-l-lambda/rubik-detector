@@ -31,6 +31,8 @@ typedef struct {
 	double sample_size;
 	uint64_t seed;
 	double min_extent, max_extent, centre_share;
+	double focal_min, focal_max;     // unknown focal length (K[0] <= 0): fx / long side search range
+	int32_t focal_steps, focal_refine;
 } rk_options;
 
 typedef struct {
@@ -39,6 +41,8 @@ typedef struct {
 	double pose[12];         // R then t
 	double lattice_cost;
 	int32_t segment_count, family_segments;
+	double camera[4];        // fx fy cx cy used (estimated if K[0] <= 0)
+	int32_t focal_estimated, focal_tried;
 	double ms_segments, ms_axes, ms_position, ms_sampling;
 	int32_t sample_count;
 	rk_sample samples[27];
@@ -47,7 +51,7 @@ typedef struct {
 RK_API void rk_default_options (rk_options* options);
 RK_API rk_detector* rk_detector_new (void);
 RK_API void rk_detector_free (rk_detector* detector);
-// format: 0 BGR, 1 RGB, 2 BGRA, 3 RGBA; K: fx fy cx cy in pixels of this image
+// format: 0 BGR, 1 RGB, 2 BGRA, 3 RGBA; K: fx fy cx cy in pixels of this image (fx <= 0: estimated; cx, cy <= 0: centre)
 RK_API void rk_detect (rk_detector* detector, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format,
 	const double K[4], const rk_options* options, rk_view* out);
 
