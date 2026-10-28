@@ -185,6 +185,18 @@ bool Evidence::fuse (double* costOut, bool requireAllFaces) {
 
 	double bestCost = std::numeric_limits<double>::infinity();
 	std::vector<int> best;
+	if (todo.empty()) {
+		// nothing to place (one view, or all rotations given): only the coverage can fail
+		if (requireAllFaces && covered(rot) < 6)
+			return false;
+		int n;
+		double cost = overlap(rot, n);
+		for (size_t v = 0; v < list.size(); v++)
+			list[v].rotation = rot[v];
+		if (costOut)
+			*costOut = n ? cost : 0.0;
+		return true;
+	}
 	if (todo.size() <= 2) {
 		// every combination (itertools.product order: the first view's rotation outermost)
 		int combos = 1;

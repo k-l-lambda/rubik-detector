@@ -105,6 +105,26 @@ int main () {
 		}
 	}
 
+	// evidence: one view needs no fusion; it places as the reference frame
+	{
+		Evidence evidence;
+		std::vector<FaceletSample> samples;
+		for (int f : {1, 3, 5})
+			for (int k = f * 9; k < f * 9 + 9; k++) {
+				FaceletSample s;
+				s.facelet = k;
+				s.valid = true;
+				s.lab = {50.0f, float(k), 0.0f};
+				samples.push_back(s);
+			}
+		int id = evidence.addView(samples);
+		double cost = -1;
+		CHECK(evidence.fuse(&cost, false));
+		CHECK(evidence.rotation(id) == identityRotation() && cost == 0);
+		CHECK(!evidence.fuse(&cost, true));   // three faces only
+		CHECK(!evidence.complete());
+	}
+
 	std::printf(failures ? "%d failures\n" : "all engine unit tests passed\n", failures);
 	return failures ? 1 : 0;
 }
