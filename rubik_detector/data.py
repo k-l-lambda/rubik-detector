@@ -2,7 +2,7 @@
 
 	samples/gNN/view{1,2,3}.png + labels.json     renders (klstudio /rubik-samples, seed = NN), 1024×768
 	samples/nNN/…                                 the same with non-standard colour schemes (seed 1000 + NN)
-	edits/gNN/view{v}-{bg,hand}.jpg + .json       seedream edits of a render: natural background / a hand holding it;
+	samples/gNN/edit/view{v}-{bg,hand}.jpg + .json seedream edits of a render: natural background / a hand holding it;
 	                                              the .json has the checker's verdict and the sticker corners carried
 	                                              over into the edit's pixels (the edit moves the cube a little)
 
@@ -38,6 +38,7 @@ class Scenario:
 	state: str			# truth, 54 letters
 	views: list
 	labels: dict
+	verdicts: list = None		# edits: the checker's verdict per view (PASS / WARN / FAIL)
 
 
 def groups(prefix="g"):
@@ -51,11 +52,12 @@ def intrinsics(labels):
 
 
 def load(group, kind="render", width=1024, include_failed=False):
-	"""The scenario, or None if that kind is missing for the group (or an edit failed its check)."""
+	"""The scenario, or None if that kind is missing for the group, or an edit failed its check (unless include_failed;
+	an edit without transferred sticker labels — no image, or not registered — is always None: no truth)."""
 	labels = json.load(open(f"{ROOT}/samples/{group}/labels.json"))
 	K0 = intrinsics(labels)
 	W0 = labels["image"]["width"]
-	views = []
+	views, verdicts = [], []
 	for v in range(3):
 		lv = labels["views"][v]
 		if kind == "render":
@@ -63,13 +65,14 @@ def load(group, kind="render", width=1024, include_failed=False):
 			stickers = [(s["index"], s["corners"]) for s in lv["stickers"] if s["visible"]]
 			occluded = set()
 		else:
-			path = f"{ROOT}/edits/{group}/view{v + 1}-{kind}.jpg"
-			meta = f"{ROOT}/edits/{group}/view{v + 1}-{kind}.json"
+			path = f"{ROOT}/samples/{group}/edit/view{v + 1}-{kind}.jpg"
+			meta = f"{ROOT}/samples/{group}/edit/view{v + 1}-{kind}.json"
 			if not os.path.exists(path) or not os.path.exists(meta):
 				return None
 			rec = json.load(open(meta))
-			if rec.get("verdict") == "FAIL" and not include_failed:
+			if (rec.get("verdict") == "FAIL" and not include_failed) or "stickers" not in rec:
 				return None
+			verdicts.append(rec.get("verdict"))
 			scale = rec["image_size"][0] / W0	# the record's corners are in the edit's pixels: back to render units
 			stickers = [(s["index"], (np.array(s["corners"]) / scale).tolist()) for s in rec["stickers"]]
 			occluded = {s["index"] for s in rec["stickers"] if s["occluded"]}
@@ -81,7 +84,7 @@ def load(group, kind="render", width=1024, include_failed=False):
 		quads = {k: np.array(c) * s for k, c in stickers}
 		pose = dict(R=np.array(lv["rotation"]).reshape(3, 3), t=np.array(lv["translation"])) if kind == "render" else {}
 		views.append(View(f"{group}/{kind}/view{v + 1}", image, K, quads, occluded, **pose))
-	return Scenario(group, kind, labels["cube"]["facelets"], views, labels)
+	return Scenario(group, kind, labels["cube"]["facelets"], views, labels, verdicts or None)
 
 
 def scenarios(kinds=KINDS, groups_=None, width=1024):

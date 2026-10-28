@@ -74,14 +74,16 @@ def recolour(s, palette):
 
 
 def _job(args):
-	group, kind, geom, width, debug_dir, debug, palette, classifier = args
-	s = data.load(group, kind, width)
+	group, kind, geom, width, debug_dir, debug, palette, classifier, include_failed = args
+	s = data.load(group, kind, width, include_failed=include_failed)
 	if s is None:
 		return None
 	if palette:
 		s = recolour(s, palette_for(palette, group))
 	t0 = time.perf_counter()
 	r = pipeline.run(s, geom, classifier)
+	if s.verdicts:
+		r["edit_verdicts"] = s.verdicts
 	r["seconds"] = time.perf_counter() - t0
 	results = r.pop("results")
 	if debug == "all" or (debug == "fail" and r.get("wrong") != 0):
@@ -137,7 +139,8 @@ def summarize(rows):
 			ge = [round(v["geometry_error"]["max"], 2) if v.get("geometry_error", {}).get("max") is not None else v.get("error") for v in r["views"]]
 			c = r.get("classification", {})
 			lines.append(f"  {r['group']} {r['kind']:10s} {r['geometry']:6s} {r.get('classifier', ''):8s} wrong={r.get('wrong')} "
-				f"{r.get('error', '')} min post {c.get('min_posterior', float('nan')):.2f} view max err {ge}")
+				+ (f"edits {r['edit_verdicts']} " if r.get("edit_verdicts") else "")
+				+ f"{r.get('error', '')} min post {c.get('min_posterior', float('nan')):.2f} view max err {ge}")
 	return "\n".join(lines)
 
 
@@ -153,23 +156,28 @@ def main():
 	ap.add_argument("--out", default=None)
 	ap.add_argument("--debug", default="fail", choices=("fail", "all", "none"))
 	ap.add_argument("--palette", default=None, choices=sorted(PALETTES) + ["random"], help="repaint the stickers (colour-scheme stress test)")
+	ap.add_argument("--include-failed", action="store_true", help="also edits that failed their check (if they have labels)")
 	ap.add_argument("--classifier", default="legal", help="legal (probabilistic, legal states only) or balanced; comma list to compare")
 	a = ap.parse_args()
 
 	groups = a.groups.split(",") if a.groups else data.groups(a.set)[:a.limit]
 	out = a.out or f"runs/{time.strftime('%m%d-%H%M%S')}"
 	os.makedirs(f"{out}/debug", exist_ok=True)
-	jobs = [(g, k, geom, a.width, f"{out}/debug", a.debug, a.palette, cl) for g in groups for k in a.kinds.split(",")
+	jobs = [(g, k, geom, a.width, f"{out}/debug", a.debug, a.palette, cl, a.include_failed) for g in groups for k in a.kinds.split(",")
 		for geom in a.geometry.split(",") for cl in a.classifier.split(",")]
 	t0 = time.time()
-	rows = []
+	rows, skipped = [], {}
 	with ProcessPoolExecutor(a.jobs) as ex, open(f"{out}/results.jsonl", "w") as fh:
-		for r in ex.map(_job, jobs):
+		for job, r in zip(jobs, ex.map(_job, jobs)):
 			if r is None:
+				skipped[job[1]] = skipped.get(job[1], 0) + 1
 				continue
 			rows.append(r)
 			fh.write(json.dumps(r) + "\n")
+	n_cfg = len(a.geometry.split(",")) * len(a.classifier.split(","))
 	text = summarize(rows) + f"\n\n{len(rows)} scenarios in {time.time() - t0:.0f} s, {a.jobs} jobs"
+	if skipped:
+		text += "; skipped (kind missing or an edit failed its check): " + ", ".join(f"{k} {n // n_cfg} groups" for k, n in sorted(skipped.items()))
 	open(f"{out}/summary.txt", "w").write(text + "\n")
 	print(text)
 	print(f"\n→ {out}")
