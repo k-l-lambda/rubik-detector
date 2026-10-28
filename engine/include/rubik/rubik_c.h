@@ -74,6 +74,35 @@ typedef struct {
 RK_API void rk_estimate (int32_t views, const rk_sample* samples, const int32_t* counts, const int32_t* rotations,
 	int32_t require_all_faces, int32_t legal, rk_state* out);
 
+typedef struct {
+	int32_t ok;
+	char error[96];
+	char state[55];
+	int32_t legal, exact;
+	double cost, min_posterior;
+	double posterior[54];
+	double probability[54][6];   // per facelet cluster posterior, colours in face order L R D U B F
+	double confidence[54];       // per facelet the chosen colour's posterior under the legal constraint
+	double min_confidence;
+	int32_t observed[54];
+	int32_t coverage;
+	int32_t corrected[54];
+	int32_t corrected_count;
+	double fusion_cost;
+} rk_state_ex;
+
+typedef struct {
+	int32_t require_all_faces;   // fusion: only rotations covering all six faces
+	int32_t legal;               // 1 legal MAP (with partial: hidden facelets completed), 0 balanced clustering
+	int32_t partial;             // allow facelets not observed
+	double outlier;              // per-observation outlier probability (0 = none)
+} rk_estimate_options;
+
+// rk_estimate for any number of views (video frames): weights per view (NULL = 1), rotations_out per view (NULL =
+// not wanted).
+RK_API void rk_estimate_ex (int32_t views, const rk_sample* samples, const int32_t* counts, const int32_t* rotations,
+	const double* weights, const rk_estimate_options* options, rk_state_ex* out, int32_t* rotations_out);
+
 // Fuse and estimate as rk_estimate, then score candidate states (n_states × 54 letters, common frame) against the
 // samples of view `view` under the fitted colour model: scores[i] = negative log-likelihood (lower = better).
 RK_API void rk_score_states (int32_t views, const rk_sample* samples, const int32_t* counts, const int32_t* rotations,

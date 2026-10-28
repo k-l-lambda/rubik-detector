@@ -15,7 +15,8 @@ apps. The Python package stays the reference; `tools/parity.py` checks the engin
 	tools/api_check.py         tracking / renamed frames / turn scoring on the samples
 	tools/focal_check.py       focal length estimation vs the samples' true K
 	tools/hud_video.py         a detection HUD on a video, with the engine's real latency (× a phone factor)
-	tools/state_tracker.py     app-layer prototype on a video: FOV → evidence accumulation → state, panel top right
+	tools/state_tracker.py     app-layer prototype on a camera stream: FOV → evidence of every frame → Bayesian colour
+	                           posteriors → legal state (from five faces), panel top right
 
 Build: `cmake -S engine -B engine/build && cmake --build engine/build -j` (static `librubik_engine.a`, shared
 `librubik_engine.so`, `rubik_engine_tests`). `-ffp-contract=off` is set on purpose: ARM64 would otherwise fuse a·b+c
@@ -29,8 +30,9 @@ and the iterative searches amplify last-bit differences.
 | unknown camera: focal length, once per camera | `Detector::estimateFocal(images)` | ~1.7–3 s for one image, ~5–9 s for three |
 | tracked frame from a prior pose | `Detector::detect(image, camera, {Search::Local, prior})` | ~0.22 s (position 58 ms) |
 | colours at a known pose | `Detector::sample(image, camera, pose)` | ~11 ms (Lab only inside the 27 patches) |
-| views → one cube frame | `Evidence::addView(samples, rotation = -1)`, `Evidence::fuse()` | ms |
+| views → one cube frame | `Evidence::addView(samples, rotation = -1, weight = 1)`, `Evidence::fuse()` | ms |
 | state, confidence, colour model | `estimateState(evidence)` | ~0.1 s |
+| video: per facelet colour posteriors, state from five faces | `estimateState(evidence, {.partial, .outlier})` | ~20 ms (60 frames) |
 | score candidate states for a view | `scoreStates(model, samples, rotation, states)` | < 1 ms each |
 | frame renaming / chaining | `relativeRotation`, `composeRotations`, `inverseRotation` | — |
 | moves | `parseTurn`, `applyTurn`, `applyMoves`, `faceTurnNames`, `compareStates` | — |
@@ -49,6 +51,17 @@ the prior (fall back to Wide when `latticeCost` jumps). Chain the frame-to-frame
 needed (`fuse` places only views added without a rotation). `estimateState` whenever a new face has been seen;
 accept when `minPosterior` (or the per-facelet `posterior`) passes the app's threshold and the state stays stable
 over a few estimates. `removeView` drops blurred or doubtful frames.
+
+**Video: continuous accumulation (`tools/state_tracker.py`).** Every good frame is evidence: frames linked to the
+previous one (small rotation up to a renaming, agreeing colours) form a chain placed through the renamings; a chain
+counts once two frames agree and is placed by colour. `estimateState` with `partial` and `outlier` (≈ 0.02) gives per
+facelet `probability` — the Bayesian posterior over the six colour clusters, uniform prior × Π over all its frames
+p(x | colour), a per-observation outlier share so a bad frame can't veto a colour — and, with `legal` once five faces
+are seen, the most probable legal state: the sixth face completed by the pieces' colours and parities, per facelet
+`confidence` = the chosen colour's posterior under the legal constraint (uniform prior over legal states,
+approximated by the best legal state without that colour there). On v102 at 30 fps (`?videoFps=30`, 4 s holds,
+camera 30 ms): the state exact from two holds at ~6 s (three holds ~11.5 s); at 3× latency still exact from five faces
+(14 s). Where two completions tie (a 3-cycle of the hidden face's edges) their facelets say 0.5.
 
 **Turns on a known state.** Keep the state and the `ColourModel` from the estimate. Per new frame (tracked pose,
 `sample`), `scoreStates(model, samples, g, {state, applyMoves(state, m) for m in faceTurnNames()})`: the lowest wins;

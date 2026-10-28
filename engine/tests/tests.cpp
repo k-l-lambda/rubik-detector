@@ -1,5 +1,7 @@
 // Unit tests without sample data: cube tables, turns, rotations, the legal search. Parity with the Python
 // reference over the samples: tools/parity.py.
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <random>
@@ -123,6 +125,73 @@ int main () {
 		CHECK(evidence.rotation(id) == identityRotation() && cost == 0);
 		CHECK(!evidence.fuse(&cost, true));   // three faces only
 		CHECK(!evidence.complete());
+	}
+
+	// partial evidence: frames of two views showing five faces, one frame with its colours scrambled; the legal
+	// completion recovers the sixth face, the bad frame cannot veto a colour with the outlier share
+	{
+		const std::string state = applyMoves(S, "R U2 F' L D' B2 R' U F2 D L'");
+		const float LAB[6][3] = {{95, 0, 0}, {85, -5, 80}, {45, 65, 45}, {65, 45, 70}, {35, 15, -60}, {55, -60, 40}};
+		std::mt19937 rng(7);
+		std::normal_distribution<float> noise(0, 2);
+		auto view = [&](int g, bool scrambled) {
+			std::vector<FaceletSample> samples;
+			for (int f : {1, 3, 5})
+				for (int k = f * 9; k < f * 9 + 9; k++) {
+					int c = int(std::string(FACES).find(state[rotationPerm(g)[k]]));
+					if (scrambled)
+						c = (c + k) % 6;
+					FaceletSample s;
+					s.facelet = k;
+					s.valid = true;
+					s.lab = {LAB[c][0] + noise(rng), LAB[c][1] + noise(rng), LAB[c][2] + noise(rng)};
+					samples.push_back(s);
+				}
+			return samples;
+		};
+		// a second view sharing one face with the identity's R U F and adding two: five faces
+		int second = -1;
+		for (int g = 0; g < 24 && second < 0; g++) {
+			std::array<bool, 6> seen{};
+			for (int f : {1, 3, 5}) {
+				seen[f] = true;
+				seen[rotationPerm(g)[f * 9 + 4] / 9] = true;
+			}
+			if (std::count(seen.begin(), seen.end(), true) == 5)
+				second = g;
+		}
+		CHECK(second >= 0);
+		Evidence evidence;
+		for (int i = 0; i < 4; i++) {
+			evidence.addView(view(identityRotation(), false), identityRotation());
+			evidence.addView(view(second, false), second);
+		}
+		evidence.addView(view(second, true), second);
+		EstimateOptions options;
+		options.partial = true;
+		options.outlier = 0.02;
+		StateEstimate e = estimateState(evidence, options);
+		CHECK(e.ok && e.coverage == 45);
+		// observed facelets right; a hidden one either right or an even tie between completions (this scramble leaves a
+		// 3-cycle of the hidden face's edges open: each edge shows one colour on the side faces)
+		int hidden = 0, ties = 0;
+		for (int k = 0; k < 54; k++) {
+			double sum = 0;
+			for (double p : e.probability[k])
+				sum += p;
+			CHECK(std::abs(sum - 1) < 1e-9);
+			if (e.observed[k])
+				CHECK(e.state[k] == state[k]);
+			else {
+				hidden++;
+				CHECK(e.probability[k][labelsOf(e.state)[k]] == e.confidence[k]);
+				CHECK(e.state[k] == state[k] || e.confidence[k] <= 0.5 + 1e-9);
+				ties += e.confidence[k] <= 0.5 + 1e-9;
+			}
+		}
+		CHECK(hidden == 9 && ties <= 3 && e.minPosterior > 0.99 && e.legal);
+		options.partial = false;
+		CHECK(!estimateState(evidence, options).ok);
 	}
 
 	std::printf(failures ? "%d failures\n" : "all engine unit tests passed\n", failures);

@@ -239,6 +239,67 @@ void rk_score_states (int32_t views, const rk_sample* samples, const int32_t* co
 	}
 }
 
+void rk_estimate_ex (int32_t views, const rk_sample* samples, const int32_t* counts, const int32_t* rotations,
+	const double* weights, const rk_estimate_options* options, rk_state_ex* out, int32_t* rotationsOut) {
+	try {
+		std::memset(out, 0, sizeof(*out));
+		if (views < 1)
+			throw std::invalid_argument("no views");
+		Evidence evidence;
+		std::vector<int> ids;
+		const rk_sample* p = samples;
+		for (int v = 0; v < views; v++) {
+			std::vector<FaceletSample> list;
+			for (int i = 0; i < counts[v]; i++, p++) {
+				FaceletSample s;
+				s.facelet = p->facelet;
+				s.valid = p->valid != 0;
+				s.pixels = p->pixels;
+				s.lab = {p->lab[0], p->lab[1], p->lab[2]};
+				std::copy(p->quad, p->quad + 8, s.quad.begin());
+				list.push_back(s);
+			}
+			ids.push_back(evidence.addView(list, rotations ? rotations[v] : -1, weights ? weights[v] : 1.0));
+		}
+		double cost = 0;
+		if (!evidence.fuse(&cost, options->require_all_faces != 0))
+			throw std::runtime_error("no rotation of the views covers all six faces");
+		out->fusion_cost = cost;
+		if (rotationsOut)
+			for (int v = 0; v < views; v++)
+				rotationsOut[v] = evidence.rotation(ids[v]);
+		EstimateOptions o;
+		o.legal = options->legal != 0;
+		o.partial = options->partial != 0;
+		o.outlier = options->outlier;
+		StateEstimate e = estimateState(evidence, o);
+		out->ok = e.ok;
+		copyError(out->error, e.error);
+		out->coverage = e.coverage;
+		for (int k = 0; k < 54; k++)
+			out->observed[k] = e.observed[k];
+		if (!e.ok)
+			return;
+		std::memcpy(out->state, e.state.c_str(), 54);
+		out->state[54] = 0;
+		out->legal = e.legal;
+		out->exact = e.exact;
+		out->cost = e.cost;
+		out->min_posterior = e.minPosterior;
+		std::copy(e.posterior.begin(), e.posterior.end(), out->posterior);
+		for (int k = 0; k < 54; k++)
+			std::copy(e.probability[k].begin(), e.probability[k].end(), out->probability[k]);
+		std::copy(e.confidence.begin(), e.confidence.end(), out->confidence);
+		out->min_confidence = e.minConfidence;
+		out->corrected_count = int32_t(e.corrected.size());
+		std::copy(e.corrected.begin(), e.corrected.end(), out->corrected);
+	}
+	catch (const std::exception& ex) {
+		out->ok = 0;
+		copyError(out->error, ex.what());
+	}
+}
+
 int32_t rk_apply_moves (const char* state, const char* moves, char out[55]) {
 	try {
 		std::string r = applyMoves(state, moves);

@@ -38,6 +38,18 @@ class State(ctypes.Structure):
 		("fusion_cost", ctypes.c_double), ("rotations", ctypes.c_int32 * 16)]
 
 
+class StateEx(ctypes.Structure):
+	_fields_ = [("ok", ctypes.c_int32), ("error", ctypes.c_char * 96), ("state", ctypes.c_char * 55),
+		("legal", ctypes.c_int32), ("exact", ctypes.c_int32), ("cost", ctypes.c_double), ("min_posterior", ctypes.c_double),
+		("posterior", ctypes.c_double * 54), ("probability", (ctypes.c_double * 6) * 54), ("confidence", ctypes.c_double * 54), ("min_confidence", ctypes.c_double),
+		("observed", ctypes.c_int32 * 54),
+		("coverage", ctypes.c_int32), ("corrected", ctypes.c_int32 * 54), ("corrected_count", ctypes.c_int32), ("fusion_cost", ctypes.c_double)]
+
+
+class EstimateOptions(ctypes.Structure):
+	_fields_ = [("require_all_faces", ctypes.c_int32), ("legal", ctypes.c_int32), ("partial", ctypes.c_int32), ("outlier", ctypes.c_double)]
+
+
 _lib = ctypes.CDLL(LIB)
 _lib.rk_detector_new.restype = ctypes.c_void_p
 _lib.rk_detector_free.argtypes = [ctypes.c_void_p]
@@ -53,6 +65,8 @@ _lib.rk_sample_at.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32, 
 _lib.rk_sample_at.restype = ctypes.c_int32
 _lib.rk_estimate_focal.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.POINTER(ctypes.c_void_p), ctypes.c_int32, ctypes.c_int32,
 	ctypes.POINTER(ctypes.c_int32), ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int32 * 4), ctypes.POINTER(Focal)]
+_lib.rk_estimate_ex.argtypes = [ctypes.c_int32, ctypes.POINTER(Sample), ctypes.POINTER(ctypes.c_int32), ctypes.POINTER(ctypes.c_int32),
+	ctypes.c_void_p, ctypes.POINTER(EstimateOptions), ctypes.POINTER(StateEx), ctypes.c_void_p]
 _lib.rk_apply_moves.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
 _lib.rk_compare_states.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
 
@@ -136,21 +150,22 @@ def score_states(views, view, states, rotations=None, require_all_faces=True):
 	return list(scores)
 
 
-def estimate(views, rotations=None, require_all_faces=True, legal=True):
-	"""views: list of view_dict results (their raw samples are reused)."""
-	counts = (ctypes.c_int32 * len(views))(*[v["_raw"].sample_count for v in views])
-	flat = (Sample * sum(counts))()
-	i = 0
-	for v in views:
-		for s in v["_raw"].samples[:v["_raw"].sample_count]:
-			flat[i] = s
-			i += 1
+def estimate(views, rotations=None, require_all_faces=True, legal=True, weights=None, partial=False, outlier=0.0):
+	"""views: list of view_dict results (their raw samples are reused), any number. weights: per view (None = 1).
+	partial: facelets not observed allowed (legal: completed by the legal search). outlier: per-observation outlier
+	probability. Returns, besides the state, per facelet `probability` (6 colours, face order L R D U B F) and
+	`observed`."""
+	counts, flat = _flat(views)
 	rot = (ctypes.c_int32 * len(views))(*(rotations or [-1] * len(views)))
-	out = State()
-	_lib.rk_estimate(len(views), flat, counts, rot, int(require_all_faces), int(legal), ctypes.byref(out))
+	w = (ctypes.c_double * len(views))(*weights) if weights is not None else None
+	rot_out = (ctypes.c_int32 * len(views))()
+	options = EstimateOptions(int(require_all_faces), int(legal), int(partial), outlier)
+	out = StateEx()
+	_lib.rk_estimate_ex(len(views), flat, counts, rot, w, ctypes.byref(options), ctypes.byref(out), rot_out)
 	return {"ok": bool(out.ok), "error": out.error.decode(), "state": out.state.decode(), "legal": bool(out.legal), "exact": bool(out.exact),
 		"cost": out.cost, "min_posterior": out.min_posterior, "posterior": list(out.posterior), "corrected": list(out.corrected[:out.corrected_count]),
-		"fusion_cost": out.fusion_cost, "rotations": list(out.rotations[:len(views)])}
+		"probability": np.array(out.probability), "confidence": list(out.confidence), "min_confidence": out.min_confidence, "observed": [bool(x) for x in out.observed], "coverage": out.coverage,
+		"fusion_cost": out.fusion_cost, "rotations": list(rot_out)}
 
 
 def apply_moves(state, moves):

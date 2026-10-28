@@ -108,7 +108,9 @@ struct Likelihood {
 	ColourModel model;
 };
 
-Likelihood likelihood (const std::vector<Obs>& obs, const std::array<int, 54>& labels);
+// cost[k][c]: Σ over k's observations of weight · −log p(x | c) (colour model fitted to the labels): with a uniform
+// prior, posterior(cost) is the Bayesian posterior of each facelet's colour. outlier: see classify.cpp.
+Likelihood likelihood (const std::vector<Obs>& obs, const std::array<int, 54>& labels, double outlier = 0);
 std::array<std::array<double, 6>, 54> posterior (const std::array<std::array<double, 6>, 54>& cost);
 
 // --- legal states (legal.cpp) -------------------------------------------------------------------------------------

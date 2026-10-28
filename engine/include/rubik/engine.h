@@ -167,14 +167,16 @@ struct Observation {
 	int view;                    // Evidence view id
 	int viewFace;                // face index (L R D U B F) in that view's own frame (its lighting group)
 	std::array<float, 3> lab;
+	double weight;               // the view's weight
 };
 
 class Evidence {
 public:
 	// Adds a view's samples (view frame). rotation: the rotation placing this view's frame into the common one if
 	// the caller knows it (relativeRotation chained over tracked frames), or -1 to find it by colour (fuse).
-	// Returns the view id.
-	int addView (const std::vector<FaceletSample>& samples, int rotation = -1);
+	// weight: the view's share in the colour likelihood (e.g. 1/n for each of n frames of one pose, so that a pose
+	// held for many frames counts once and a single bad frame among them only by its share). Returns the view id.
+	int addView (const std::vector<FaceletSample>& samples, int rotation = -1, double weight = 1.0);
 	void removeView (int id);
 	void clear ();
 
@@ -198,6 +200,7 @@ private:
 		std::vector<FaceletSample> samples;
 		int rotation;
 		bool fixed;
+		double weight;
 	};
 	std::vector<View> list;
 	int nextId = 0;
@@ -215,6 +218,15 @@ struct EstimateOptions {
 	bool legal = true;           // most probable legal state (else the balanced 9-per-colour clustering)
 	int iterations = 5;
 	int swapRounds = 3;
+	// partial evidence: facelets not observed are allowed. The colours are clustered over the observed ones (a
+	// colour whose centre is unseen seeded by the observation farthest from the seen ones); with legal, the hidden
+	// facelets are completed by the legal search (five faces leave the sixth's corners and edges to the pieces'
+	// colours and the parities: usually one completion), their probability from how much forbidding the completed
+	// colour costs.
+	bool partial = false;
+	// per-observation outlier probability in the colour likelihood (0: none, the photo protocol). Accumulating many
+	// video frames, a few may be mis-located or mis-placed: with ε > 0 such a frame cannot veto a colour.
+	double outlier = 0;
 };
 
 struct StateEstimate {
@@ -224,10 +236,19 @@ struct StateEstimate {
 	bool legal = false;
 	bool exact = true;                       // the legal search finished within its enumeration limit
 	double cost = 0;                         // self-consistent negative log-likelihood
-	std::array<double, 54> posterior{};      // independent posterior of each chosen colour: a per-facelet confidence
-	double minPosterior = 0;
+	std::array<double, 54> posterior{};      // cluster posterior of each chosen colour, colour evidence only (0: not observed)
+	// with legal: per facelet the posterior of the chosen colour under the legal constraint, uniform prior over legal
+	// states (the colour evidence of the other facelets counts too); without: = posterior
+	std::array<double, 54> confidence{};
+	double minConfidence = 0;
+	double minPosterior = 0;                 // over the observed facelets
 	std::vector<int> corrected;              // facelets legality moved off their own most likely colour
-	std::array<std::array<double, 6>, 54> nll{};   // per facelet and colour, under the model
+	std::array<std::array<double, 6>, 54> nll{};   // per facelet and colour, under the model (0 where not observed)
+	// per facelet the posterior of each colour, uniform prior × Π over its observations p(x | colour) (rows sum to
+	// 1); a hidden facelet (partial): from the legal completion
+	std::array<std::array<double, 6>, 54> probability{};
+	std::array<bool, 54> observed{};
+	int coverage = 0;                        // observed facelets
 	ColourModel model;
 };
 

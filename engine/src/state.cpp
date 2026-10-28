@@ -64,10 +64,12 @@ int relativeRotation (const Pose& from, const Pose& to) {
 
 // --- evidence ----------------------------------------------------------------------------------------------------
 
-int Evidence::addView (const std::vector<FaceletSample>& samples, int rotation) {
+int Evidence::addView (const std::vector<FaceletSample>& samples, int rotation, double weight) {
 	if (rotation >= 24)
 		throw std::invalid_argument("rotation out of range");
-	list.push_back({nextId, samples, rotation, rotation >= 0});
+	if (!(weight > 0))
+		throw std::invalid_argument("weight must be positive");
+	list.push_back({nextId, samples, rotation, rotation >= 0, weight});
 	return nextId++;
 }
 
@@ -100,7 +102,7 @@ std::vector<std::vector<Observation>> Evidence::observations () const {
 			continue;
 		for (const FaceletSample& s : v.samples)
 			if (s.valid)
-				out[tables().perms[v.rotation][s.facelet]].push_back({v.id, tables().faceOf[s.facelet], s.lab});
+				out[tables().perms[v.rotation][s.facelet]].push_back({v.id, tables().faceOf[s.facelet], s.lab, v.weight});
 	}
 	return out;
 }
@@ -261,7 +263,7 @@ std::vector<Obs> toObs (const Evidence& evidence) {
 	auto all = evidence.observations();
 	for (int k = 0; k < 54; k++)
 		for (const Observation& o : all[k])
-			obs.push_back({k, o.view, o.viewFace, weigh(o.lab.data()), 1.0});
+			obs.push_back({k, o.view, o.viewFace, weigh(o.lab.data()), o.weight});
 	return obs;
 }
 
@@ -276,25 +278,33 @@ double selfCost (const Likelihood& l, const std::array<int, 54>& labels) {
 
 StateEstimate estimateState (const Evidence& evidence, const EstimateOptions& options) {
 	StateEstimate out;
-	if (!evidence.complete()) {
+	std::vector<Obs> obs = toObs(evidence);
+	for (const Obs& o : obs)
+		out.observed[o.facelet] = true;
+	out.coverage = int(std::count(out.observed.begin(), out.observed.end(), true));
+	if (out.coverage < 54 && !options.partial) {
 		out.error = "the placed views don't cover all 54 facelets";
 		return out;
 	}
-	std::vector<Obs> obs = toObs(evidence);
+	if (out.coverage == 0) {
+		out.error = "no observations";
+		return out;
+	}
+	auto isCentre = [](int k) { return std::find(std::begin(CENTRE_FACELETS), std::end(CENTRE_FACELETS), k) != std::end(CENTRE_FACELETS); };
 	std::array<int, 54> labels = classifyBalanced(obs);
 	Likelihood fit;
 	bool exact = true;
 	if (options.legal) {
 		// alternate: model fitted to the labels, legal MAP state under it, until it settles
 		for (int it = 0; it < options.iterations; it++) {
-			Likelihood l = likelihood(obs, labels);
+			Likelihood l = likelihood(obs, labels, options.outlier);
 			LegalResult r = bestLegal(l.cost);
 			exact = r.exact;
 			if (r.labels == labels)
 				break;
 			labels = r.labels;
 		}
-		fit = likelihood(obs, labels);
+		fit = likelihood(obs, labels, options.outlier);
 		double best = selfCost(fit, labels);
 		// a model fitted to wrong labels favours them: the least sure facelets are each forbidden their colour and
 		// the result kept if its own fit is better
@@ -305,14 +315,15 @@ StateEstimate estimateState (const Evidence& evidence, const EstimateOptions& op
 			for (int k = 0; k < 54; k++)
 				order[k] = k;
 			std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return post[a][labels[a]] < post[b][labels[b]]; });
-			for (int i = 0; i < 12; i++) {
+			std::stable_partition(order.begin(), order.end(), [&](int k) { return out.observed[k]; });
+			for (int i = 0; i < std::min(12, out.coverage); i++) {
 				int k = order[i];
-				if (std::find(std::begin(CENTRE_FACELETS), std::end(CENTRE_FACELETS), k) != std::end(CENTRE_FACELETS))
+				if (isCentre(k))
 					continue;
 				auto forced = fit.cost;
 				forced[k][labels[k]] += 1e6;
 				LegalResult cand = bestLegal(forced);
-				Likelihood l = likelihood(obs, cand.labels);
+				Likelihood l = likelihood(obs, cand.labels, options.outlier);
 				double c = selfCost(l, cand.labels);
 				if (c < best - 1e-6) {
 					best = c;
@@ -328,20 +339,57 @@ StateEstimate estimateState (const Evidence& evidence, const EstimateOptions& op
 		out.cost = best;
 	}
 	else {
-		fit = likelihood(obs, labels);
+		fit = likelihood(obs, labels, options.outlier);
 		out.cost = selfCost(fit, labels);
 	}
+	// cluster posteriors: uniform prior × Π p(x | colour) over a facelet's observations; a facelet not observed has
+	// none (uniform)
 	auto post = posterior(fit.cost);
 	out.state.resize(54);
 	out.minPosterior = 1;
+	out.minConfidence = 1;
 	for (int k = 0; k < 54; k++) {
 		out.state[k] = FACES[labels[k]];
-		out.posterior[k] = post[k][labels[k]];
-		out.minPosterior = std::min(out.minPosterior, out.posterior[k]);
+		out.probability[k] = post[k];
+		out.posterior[k] = out.observed[k] ? post[k][labels[k]] : 0;
+		out.confidence[k] = out.posterior[k];
+		if (out.observed[k])
+			out.minPosterior = std::min(out.minPosterior, out.posterior[k]);
 		int free = int(std::min_element(fit.cost[k].begin(), fit.cost[k].end()) - fit.cost[k].begin());
-		if (free != labels[k])
+		if (out.observed[k] && free != labels[k])
 			out.corrected.push_back(k);
 	}
+	if (options.legal) {
+		// confidence: with a uniform prior over legal states, the posterior of the chosen colour approximated by the
+		// best legal state without it there: Δ = its cost − the state's, p = 1 / (1 + e^-Δ)
+		double total = selfCost(fit, labels);
+		for (int k = 0; k < 54; k++) {
+			if (isCentre(k)) {
+				out.confidence[k] = 1;
+				if (!out.observed[k]) {
+					out.probability[k].fill(0);
+					out.probability[k][labels[k]] = 1;
+				}
+				continue;
+			}
+			auto forced = fit.cost;
+			forced[k][labels[k]] += 1e6;
+			LegalResult alt = bestLegal(forced);
+			double delta = std::max(0.0, alt.total - total);
+			double p = delta > 50 ? 1.0 : 1 / (1 + std::exp(-delta));
+			out.confidence[k] = p;
+			if (!out.observed[k]) {
+				// a hidden facelet: its probability vector is the completion's
+				out.probability[k].fill(0);
+				out.probability[k][labels[k]] = p;
+				out.probability[k][alt.labels[k]] += 1 - p;
+			}
+		}
+		for (int k = 0; k < 54; k++)
+			out.minConfidence = std::min(out.minConfidence, out.confidence[k]);
+	}
+	else
+		out.minConfidence = out.minPosterior;
 	out.nll = fit.cost;
 	out.model = fit.model;
 	out.exact = exact;
