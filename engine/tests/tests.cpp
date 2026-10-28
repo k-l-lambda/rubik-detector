@@ -224,11 +224,12 @@ int main () {
 			for (int k : {9, 13, 31, 50})
 				CHECK(std::abs(e.posterior[k] - expect[n - 1]) < 1e-4);
 		}
-		// conflicts: none with the state shown, the stickers an R turn moves into view with R
+		// conflicts: none with the colours the model labelled (with three faces seen, the clusters of colours whose
+		// centre is hidden are named arbitrarily: the labelling, not the true state), some once an R turn moves them
 		{
 			StateEstimate e = estimateState(evidence, options);
-			CHECK(conflicts(e.model, view(), identityRotation(), state).empty());
-			CHECK(conflicts(e.model, view(), identityRotation(), applyMoves(state, "R")).size() >= 3);
+			CHECK(conflicts(e.model, view(), identityRotation(), e.state).empty());
+			CHECK(conflicts(e.model, view(), identityRotation(), applyMoves(e.state, "R")).size() >= 3);
 		}
 		// the same four frames as one group: one piece of evidence
 		Evidence grouped;
