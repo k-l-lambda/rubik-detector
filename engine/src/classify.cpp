@@ -245,6 +245,7 @@ Likelihood likelihood (const std::vector<Obs>& obs, const std::array<int, 54>& l
 		if (counts[c] > 0)
 			logdetMean += logdet[c] / modelled;
 	const double broad = 0.5 * logdetMean + 0.5 * (T_DOF + 4) * std::log1p(4 * 25.0 / T_DOF);
+	out.obsCost.assign(N, {0, 0, 0, 0, 0, 0});
 	for (size_t i = 0; i < N; i++) {
 		for (int c = 0; c < 6; c++) {
 			if (counts[c] <= 0)
@@ -259,6 +260,7 @@ Likelihood likelihood (const std::vector<Obs>& obs, const std::array<int, 54>& l
 				nll = m - std::log((1 - outlier) * std::exp(m - nll) + outlier * std::exp(m - broad));
 			}
 			out.cost[obs[i].facelet][c] += obs[i].weight * nll;
+			out.obsCost[i][c] = nll;
 		}
 	}
 	std::array<bool, 54> observed{};
@@ -274,6 +276,15 @@ Likelihood likelihood (const std::vector<Obs>& obs, const std::array<int, 54>& l
 				if (counts[c] <= 0)
 					out.cost[k][c] = worst + 10;
 		}
+	for (size_t i = 0; i < N; i++) {
+		double worst = -std::numeric_limits<double>::infinity();
+		for (int c = 0; c < 6; c++)
+			if (counts[c] > 0)
+				worst = std::max(worst, out.obsCost[i][c]);
+		for (int c = 0; c < 6; c++)
+			if (counts[c] <= 0)
+				out.obsCost[i][c] = worst + 10;
+	}
 	return out;
 }
 

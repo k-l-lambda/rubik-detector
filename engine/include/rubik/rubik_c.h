@@ -96,12 +96,13 @@ typedef struct {
 	int32_t legal;               // 1 legal MAP (with partial: hidden facelets completed), 0 balanced clustering
 	int32_t partial;             // allow facelets not observed
 	double outlier;              // per-observation outlier probability (0 = none)
+	int32_t reliability;         // unknown reliability per group, integrated out (EstimateOptions::reliability)
 } rk_estimate_options;
 
-// rk_estimate for any number of views (video frames): weights per view (NULL = 1), rotations_out per view (NULL =
-// not wanted).
+// rk_estimate for any number of views (video frames): weights and reliability groups per view (NULL = 1, each view
+// its own), rotations_out per view (NULL = not wanted).
 RK_API void rk_estimate_ex (int32_t views, const rk_sample* samples, const int32_t* counts, const int32_t* rotations,
-	const double* weights, const rk_estimate_options* options, rk_state_ex* out, int32_t* rotations_out);
+	const double* weights, const int32_t* groups, const rk_estimate_options* options, rk_state_ex* out, int32_t* rotations_out);
 
 // Fuse and estimate as rk_estimate, then score candidate states (n_states × 54 letters, common frame) against the
 // samples of view `view` under the fitted colour model: scores[i] = negative log-likelihood (lower = better).

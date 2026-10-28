@@ -54,13 +54,17 @@ over a few estimates. `removeView` drops blurred or doubtful frames.
 
 **Video: continuous accumulation (`tools/state_tracker.py`).** Every good frame is evidence: frames linked to the
 previous one (small rotation up to a renaming, agreeing colours) form a chain placed through the renamings; a chain
-counts once two frames agree and is placed by colour. `estimateState` with `partial` and `outlier` (≈ 0.02) gives per
-facelet `probability` — the Bayesian posterior over the six colour clusters, uniform prior × Π over all its frames
-p(x | colour), a per-observation outlier share so a bad frame can't veto a colour — and, with `legal` once five faces
-are seen, the most probable legal state: the sixth face completed by the pieces' colours and parities, per facelet
+is placed by colour. `estimateState` with `partial` and `reliability` gives per facelet `probability`, the Bayesian
+posterior over the six colour clusters with a uniform prior, where each frame (or each `group` of views) is right
+with an unknown probability r, uniform on [0, 1], and otherwise says nothing: P(c) ∝ ∫ Π_frames (r·L_f(c) + (1 − r)/6)
+dr, L_f the frame's own colour posterior (exact by Gauss–Legendre: the integrand is a polynomial in r). However sharp
+one frame's colour, it gives 7/12 = 58 %; two agreeing 90 %, three 98 %, four 99.7 % (the rule of succession for six
+colours; the plain product of the likelihoods says 99.99 % from one sample a cluster's width away from the rest).
+With `legal` once five faces are seen, the most probable legal state under these: the sixth face completed by the pieces' colours and parities, per facelet
 `confidence` = the chosen colour's posterior under the legal constraint (uniform prior over legal states,
 approximated by the best legal state without that colour there). On v102 at 30 fps (`?videoFps=30`, 4 s holds,
-camera 30 ms): the state exact from two holds at ~6 s (three holds ~11.5 s); at 3× latency still exact from five faces
+camera 30 ms): the first frame 58 %, the fifth face 58 % on colour alone but 98 % under the legal constraint; the state
+exact from two holds at ~6 s (three holds ~11.5 s); at 3× latency still exact from five faces
 (14 s). Where two completions tie (a 3-cycle of the hidden face's edges) their facelets say 0.5.
 
 **Turns on a known state.** Keep the state and the `ColourModel` from the estimate. Per new frame (tracked pose,

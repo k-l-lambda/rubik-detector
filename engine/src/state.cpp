@@ -64,12 +64,12 @@ int relativeRotation (const Pose& from, const Pose& to) {
 
 // --- evidence ----------------------------------------------------------------------------------------------------
 
-int Evidence::addView (const std::vector<FaceletSample>& samples, int rotation, double weight) {
+int Evidence::addView (const std::vector<FaceletSample>& samples, int rotation, double weight, int group) {
 	if (rotation >= 24)
 		throw std::invalid_argument("rotation out of range");
 	if (!(weight > 0))
 		throw std::invalid_argument("weight must be positive");
-	list.push_back({nextId, samples, rotation, rotation >= 0, weight});
+	list.push_back({nextId, samples, rotation, rotation >= 0, weight, group});
 	return nextId++;
 }
 
@@ -102,7 +102,7 @@ std::vector<std::vector<Observation>> Evidence::observations () const {
 			continue;
 		for (const FaceletSample& s : v.samples)
 			if (s.valid)
-				out[tables().perms[v.rotation][s.facelet]].push_back({v.id, tables().faceOf[s.facelet], s.lab, v.weight});
+				out[tables().perms[v.rotation][s.facelet]].push_back({v.id, tables().faceOf[s.facelet], s.lab, v.weight, v.group >= 0 ? v.group : -1 - v.id});
 	}
 	return out;
 }
@@ -263,8 +263,74 @@ std::vector<Obs> toObs (const Evidence& evidence) {
 	auto all = evidence.observations();
 	for (int k = 0; k < 54; k++)
 		for (const Observation& o : all[k])
-			obs.push_back({k, o.view, o.viewFace, weigh(o.lab.data()), o.weight});
+			obs.push_back({k, o.view, o.viewFace, weigh(o.lab.data()), o.weight, o.group});
 	return obs;
+}
+
+// Gauss–Legendre nodes and weights on [0, 1]: exact for polynomials up to degree 2n − 1
+void gaussLegendre (int n, std::vector<double>& x, std::vector<double>& w) {
+	x.assign(n, 0);
+	w.assign(n, 0);
+	for (int i = 0; i < n; i++) {
+		double z = std::cos(M_PI * (i + 0.75) / (n + 0.5)), dp = 0;
+		for (int it = 0; it < 100; it++) {
+			double p0 = 1, p1 = z;
+			for (int j = 2; j <= n; j++) {
+				double p2 = ((2 * j - 1) * z * p1 - (j - 1) * p0) / j;
+				p0 = p1;
+				p1 = p2;
+			}
+			dp = n * (z * p1 - p0) / (z * z - 1);
+			double dz = p1 / dp;
+			z -= dz;
+			if (std::abs(dz) < 1e-15)
+				break;
+		}
+		x[i] = (1 - z) / 2;
+		w[i] = 1 / ((1 - z * z) * dp * dp);
+	}
+}
+
+// −log P(c) per facelet under unknown reliability (EstimateOptions::reliability); 0 where not observed
+std::array<std::array<double, 6>, 54> reliabilityCost (const std::vector<Obs>& obs, const Likelihood& fit) {
+	std::array<std::array<double, 6>, 54> out{};
+	std::vector<std::map<int, std::array<double, 6>>> groups(54);   // facelet → group → Σ weight·nll
+	for (size_t i = 0; i < obs.size(); i++) {
+		auto& g = groups[obs[i].facelet].emplace(obs[i].group, std::array<double, 6>{}).first->second;
+		for (int c = 0; c < 6; c++)
+			g[c] += obs[i].weight * fit.obsCost[i][c];
+	}
+	for (int k = 0; k < 54; k++) {
+		if (groups[k].empty())
+			continue;
+		std::vector<std::array<double, 6>> L;
+		for (const auto& entry : groups[k]) {
+			std::array<double, 6> p{};
+			double m = *std::min_element(entry.second.begin(), entry.second.end()), s = 0;
+			for (int c = 0; c < 6; c++)
+				s += p[c] = std::exp(-(entry.second[c] - m));
+			for (int c = 0; c < 6; c++)
+				p[c] /= s;
+			L.push_back(p);
+		}
+		// the integrand is a polynomial of degree |groups| in r: exact with |groups| / 2 + 1 nodes; log space
+		std::vector<double> x, w;
+		gaussLegendre(int(L.size()) / 2 + 1, x, w);
+		for (int c = 0; c < 6; c++) {
+			std::vector<double> terms;
+			for (size_t q = 0; q < x.size(); q++) {
+				double s = std::log(w[q]);
+				for (const auto& p : L)
+					s += std::log(x[q] * p[c] + (1 - x[q]) / 6);
+				terms.push_back(s);
+			}
+			double m = *std::max_element(terms.begin(), terms.end()), s = 0;
+			for (double t : terms)
+				s += std::exp(t - m);
+			out[k][c] = -(m + std::log(s));
+		}
+	}
+	return out;
 }
 
 double selfCost (const Likelihood& l, const std::array<int, 54>& labels) {
@@ -342,9 +408,26 @@ StateEstimate estimateState (const Evidence& evidence, const EstimateOptions& op
 		fit = likelihood(obs, labels, options.outlier);
 		out.cost = selfCost(fit, labels);
 	}
-	// cluster posteriors: uniform prior × Π p(x | colour) over a facelet's observations; a facelet not observed has
-	// none (uniform)
-	auto post = posterior(fit.cost);
+	// the facelet costs the state and its confidence are judged by: the colour likelihoods, or with unknown
+	// reliability the marginal over it (the legal state redone under those)
+	auto C = fit.cost;
+	if (options.reliability) {
+		C = reliabilityCost(obs, fit);
+		if (options.legal) {
+			LegalResult r = bestLegal(C);
+			labels = r.labels;
+			exact = r.exact;
+		}
+	}
+	auto total = [&](const std::array<int, 54>& l) {
+		double s = 0;
+		for (int k = 0; k < 54; k++)
+			s += C[k][l[k]];
+		return s;
+	};
+	// cluster posteriors: uniform prior × Π p(x | colour) over a facelet's observations (or the reliability
+	// marginal); a facelet not observed has none (uniform)
+	auto post = posterior(C);
 	out.state.resize(54);
 	out.minPosterior = 1;
 	out.minConfidence = 1;
@@ -355,14 +438,14 @@ StateEstimate estimateState (const Evidence& evidence, const EstimateOptions& op
 		out.confidence[k] = out.posterior[k];
 		if (out.observed[k])
 			out.minPosterior = std::min(out.minPosterior, out.posterior[k]);
-		int free = int(std::min_element(fit.cost[k].begin(), fit.cost[k].end()) - fit.cost[k].begin());
+		int free = int(std::min_element(C[k].begin(), C[k].end()) - C[k].begin());
 		if (out.observed[k] && free != labels[k])
 			out.corrected.push_back(k);
 	}
 	if (options.legal) {
 		// confidence: with a uniform prior over legal states, the posterior of the chosen colour approximated by the
 		// best legal state without it there: Δ = its cost − the state's, p = 1 / (1 + e^-Δ)
-		double total = selfCost(fit, labels);
+		double base = total(labels);
 		for (int k = 0; k < 54; k++) {
 			if (isCentre(k)) {
 				out.confidence[k] = 1;
@@ -372,10 +455,10 @@ StateEstimate estimateState (const Evidence& evidence, const EstimateOptions& op
 				}
 				continue;
 			}
-			auto forced = fit.cost;
+			auto forced = C;
 			forced[k][labels[k]] += 1e6;
 			LegalResult alt = bestLegal(forced);
-			double delta = std::max(0.0, alt.total - total);
+			double delta = std::max(0.0, alt.total - base);
 			double p = delta > 50 ? 1.0 : 1 / (1 + std::exp(-delta));
 			out.confidence[k] = p;
 			if (!out.observed[k]) {

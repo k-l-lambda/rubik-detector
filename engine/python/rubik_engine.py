@@ -47,7 +47,7 @@ class StateEx(ctypes.Structure):
 
 
 class EstimateOptions(ctypes.Structure):
-	_fields_ = [("require_all_faces", ctypes.c_int32), ("legal", ctypes.c_int32), ("partial", ctypes.c_int32), ("outlier", ctypes.c_double)]
+	_fields_ = [("require_all_faces", ctypes.c_int32), ("legal", ctypes.c_int32), ("partial", ctypes.c_int32), ("outlier", ctypes.c_double), ("reliability", ctypes.c_int32)]
 
 
 _lib = ctypes.CDLL(LIB)
@@ -66,7 +66,7 @@ _lib.rk_sample_at.restype = ctypes.c_int32
 _lib.rk_estimate_focal.argtypes = [ctypes.c_void_p, ctypes.c_int32, ctypes.POINTER(ctypes.c_void_p), ctypes.c_int32, ctypes.c_int32,
 	ctypes.POINTER(ctypes.c_int32), ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int32 * 4), ctypes.POINTER(Focal)]
 _lib.rk_estimate_ex.argtypes = [ctypes.c_int32, ctypes.POINTER(Sample), ctypes.POINTER(ctypes.c_int32), ctypes.POINTER(ctypes.c_int32),
-	ctypes.c_void_p, ctypes.POINTER(EstimateOptions), ctypes.POINTER(StateEx), ctypes.c_void_p]
+	ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(EstimateOptions), ctypes.POINTER(StateEx), ctypes.c_void_p]
 _lib.rk_apply_moves.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
 _lib.rk_compare_states.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
 
@@ -150,18 +150,20 @@ def score_states(views, view, states, rotations=None, require_all_faces=True):
 	return list(scores)
 
 
-def estimate(views, rotations=None, require_all_faces=True, legal=True, weights=None, partial=False, outlier=0.0):
+def estimate(views, rotations=None, require_all_faces=True, legal=True, weights=None, partial=False, outlier=0.0, groups=None, reliability=False):
 	"""views: list of view_dict results (their raw samples are reused), any number. weights: per view (None = 1).
 	partial: facelets not observed allowed (legal: completed by the legal search). outlier: per-observation outlier
-	probability. Returns, besides the state, per facelet `probability` (6 colours, face order L R D U B F) and
+	probability. reliability: each group's evidence (groups: per view, None = each view its own) right with an unknown
+	probability, uniform prior, integrated out (EstimateOptions::reliability). Returns, besides the state, per facelet `probability` (6 colours, face order L R D U B F) and
 	`observed`."""
 	counts, flat = _flat(views)
 	rot = (ctypes.c_int32 * len(views))(*(rotations or [-1] * len(views)))
 	w = (ctypes.c_double * len(views))(*weights) if weights is not None else None
+	gr = (ctypes.c_int32 * len(views))(*groups) if groups is not None else None
 	rot_out = (ctypes.c_int32 * len(views))()
-	options = EstimateOptions(int(require_all_faces), int(legal), int(partial), outlier)
+	options = EstimateOptions(int(require_all_faces), int(legal), int(partial), outlier, int(reliability))
 	out = StateEx()
-	_lib.rk_estimate_ex(len(views), flat, counts, rot, w, ctypes.byref(options), ctypes.byref(out), rot_out)
+	_lib.rk_estimate_ex(len(views), flat, counts, rot, w, gr, ctypes.byref(options), ctypes.byref(out), rot_out)
 	return {"ok": bool(out.ok), "error": out.error.decode(), "state": out.state.decode(), "legal": bool(out.legal), "exact": bool(out.exact),
 		"cost": out.cost, "min_posterior": out.min_posterior, "posterior": list(out.posterior), "corrected": list(out.corrected[:out.corrected_count]),
 		"probability": np.array(out.probability), "confidence": list(out.confidence), "min_confidence": out.min_confidence, "observed": [bool(x) for x in out.observed], "coverage": out.coverage,

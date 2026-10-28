@@ -240,7 +240,7 @@ void rk_score_states (int32_t views, const rk_sample* samples, const int32_t* co
 }
 
 void rk_estimate_ex (int32_t views, const rk_sample* samples, const int32_t* counts, const int32_t* rotations,
-	const double* weights, const rk_estimate_options* options, rk_state_ex* out, int32_t* rotationsOut) {
+	const double* weights, const int32_t* groups, const rk_estimate_options* options, rk_state_ex* out, int32_t* rotationsOut) {
 	try {
 		std::memset(out, 0, sizeof(*out));
 		if (views < 1)
@@ -259,7 +259,7 @@ void rk_estimate_ex (int32_t views, const rk_sample* samples, const int32_t* cou
 				std::copy(p->quad, p->quad + 8, s.quad.begin());
 				list.push_back(s);
 			}
-			ids.push_back(evidence.addView(list, rotations ? rotations[v] : -1, weights ? weights[v] : 1.0));
+			ids.push_back(evidence.addView(list, rotations ? rotations[v] : -1, weights ? weights[v] : 1.0, groups ? groups[v] : -1));
 		}
 		double cost = 0;
 		if (!evidence.fuse(&cost, options->require_all_faces != 0))
@@ -272,6 +272,7 @@ void rk_estimate_ex (int32_t views, const rk_sample* samples, const int32_t* cou
 		o.legal = options->legal != 0;
 		o.partial = options->partial != 0;
 		o.outlier = options->outlier;
+		o.reliability = options->reliability != 0;
 		StateEstimate e = estimateState(evidence, o);
 		out->ok = e.ok;
 		copyError(out->error, e.error);

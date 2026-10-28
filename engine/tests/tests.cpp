@@ -194,6 +194,43 @@ int main () {
 		CHECK(!estimateState(evidence, options).ok);
 	}
 
+	// unknown reliability: n views agreeing on a decisive colour give P = ∫(r + (1−r)/6)^n / (that + 5·∫((1−r)/6)^n)
+	{
+		const float LAB[6][3] = {{95, 0, 0}, {85, -5, 80}, {45, 65, 45}, {65, 45, 70}, {35, 15, -60}, {55, -60, 40}};
+		const std::string state = applyMoves(S, "R U F");
+		auto view = [&]() {
+			std::vector<FaceletSample> samples;
+			for (int f : {1, 3, 5})
+				for (int k = f * 9; k < f * 9 + 9; k++) {
+					int c = int(std::string(FACES).find(state[k]));
+					FaceletSample s;
+					s.facelet = k;
+					s.valid = true;
+					s.lab = {LAB[c][0] + float(k % 3), LAB[c][1] - float(k % 2), LAB[c][2]};
+					samples.push_back(s);
+				}
+			return samples;
+		};
+		const double expect[4] = {7.0 / 12, 0.8958333, 0.9810606, 0.9967949};
+		Evidence evidence;
+		EstimateOptions options;
+		options.partial = true;
+		options.legal = false;
+		options.reliability = true;
+		for (int n = 1; n <= 4; n++) {
+			evidence.addView(view(), identityRotation());
+			StateEstimate e = estimateState(evidence, options);
+			CHECK(e.ok && e.coverage == 27);
+			for (int k : {9, 13, 31, 50})
+				CHECK(std::abs(e.posterior[k] - expect[n - 1]) < 1e-4);
+		}
+		// the same four frames as one group: one piece of evidence
+		Evidence grouped;
+		for (int n = 0; n < 4; n++)
+			grouped.addView(view(), identityRotation(), 1.0, 0);
+		CHECK(std::abs(estimateState(grouped, options).posterior[13] - 7.0 / 12) < 1e-4);
+	}
+
 	std::printf(failures ? "%d failures\n" : "all engine unit tests passed\n", failures);
 	return failures ? 1 : 0;
 }

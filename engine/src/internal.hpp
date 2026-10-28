@@ -99,12 +99,14 @@ struct Obs {
 	int view, face;       // the view and its own-frame face (lighting group)
 	std::array<double, 4> x;
 	double weight;
+	int group = -1;       // reliability group
 };
 
 std::array<int, 54> classifyBalanced (const std::vector<Obs>& obs, int iterations = 6);
 
 struct Likelihood {
 	std::array<std::array<double, 6>, 54> cost;
+	std::vector<std::array<double, 6>> obsCost;   // per observation (unweighted)
 	ColourModel model;
 };
 

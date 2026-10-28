@@ -11,14 +11,17 @@ the app --camera-ms later. Two workers, each step costing its measured time × -
 	              on at the velocity of the last two linked detections (a turn would leave a stale pose behind); none
 	              after a fallback without velocity (straight to wide).
 	estimator  3. whenever the evidence has grown: the colour clusters and per facelet the Bayesian posterior of its
-	              colour — uniform prior × Π over all its observations p(x | colour), Student-t colour model with a
-	              per-observation outlier share (--outlier: a bad frame costs every colour alike instead of vetoing
-	              one); from --legal-from facelets (5 faces) the most probable legal state, the hidden facelets
-	              completed by the legal search and their probability from how much the next best completion costs.
+	              colour, uniform prior. Each piece of evidence (--unit: a frame, or a chain of linked frames) is right
+	              with an unknown probability r, uniform on [0, 1], and otherwise says nothing:
+	              P(c) ∝ ∫ Π_units (r·L_u(c) + (1 − r)/6) dr, L_u the unit's own posterior from its observations
+	              (Student-t colour model). One unit gives 58 % however sharp its colour, two agreeing 90 %, three
+	              98 %, four 99.7 % — the rule of succession for six colours. From --legal-from facelets (5 faces) the
+	              most probable legal state under these, the hidden facelets completed by the legal search, and per
+	              facelet the confidence of the state's colour under the legal constraint.
 
 Placing frames in one cube frame: consecutive good detections within --link-deg of each other up to a renaming of
 the view frame, whose colours agree (median ΔE ≤ --agree-colour), form a chain and inherit its placement through the
-renaming. A chain counts once --confirm frames agree; it is then placed by colour against the evidence so far (≥ 9
+renaming. A chain counts once --confirm frames agree (default 1); it is then placed by colour against the evidence so far (≥ 9
 overlapping facelets; if it can't be, from a later frame). Evidence needs a lattice cost ≤ --evidence-cost (tracking
 accepts up to --fallback-cost: a mid-turn fit near that limit can be wrong).
 
@@ -190,7 +193,7 @@ def estimate(frames, rotations, args):
 	"""the estimator worker: clusters, per facelet posteriors, and from --legal-from facelets the legal state"""
 	covered = len({cube.PERMS[g][s["facelet"]] for v, g in zip(frames, rotations) for s in v["samples"] if s["valid"]})
 	e = re.estimate(frames, rotations=rotations, require_all_faces=False, partial=True, legal=covered >= args.legal_from,
-		outlier=args.outlier)
+		outlier=args.outlier, reliability=args.unit != "none", groups=[v["chain"] for v in frames] if args.unit == "chain" else None)
 	e["covered"] = covered
 	e["frames"] = len(frames)
 	e["chains"] = len({v["chain"] for v in frames})
@@ -285,10 +288,14 @@ def main():
 	ap.add_argument("--known-fov", action="store_true", help="use the labels' K instead of estimating it")
 	ap.add_argument("--fallback-cost", type=float, default=0.15)
 	ap.add_argument("--evidence-cost", type=float, default=0.09, help="lattice cost limit for evidence (tracking: --fallback-cost)")
-	ap.add_argument("--confirm", type=int, default=2, help="frames of a chain that must agree before it counts")
+	ap.add_argument("--confirm", type=int, default=1, help="frames of a chain that must agree before it counts (with unknown "
+		"reliability a lone frame is weak evidence anyway: 58 %%)")
 	ap.add_argument("--link-deg", type=float, default=20.0)
 	ap.add_argument("--agree-colour", type=float, default=12.0, help="median ΔE76 between linked detections' paired samples")
-	ap.add_argument("--outlier", type=float, default=0.02)
+	ap.add_argument("--unit", choices=("frame", "chain", "none"), default="frame",
+		help="one piece of evidence, right with an unknown probability (uniform prior): a frame, or a chain of linked frames "
+		"(its frames stand or fall together); none: the plain product of the colour likelihoods")
+	ap.add_argument("--outlier", type=float, default=0.0, help="per-observation outlier share (with --unit none)")
 	ap.add_argument("--legal-from", type=int, default=45)
 	ap.add_argument("--out", default=None)
 	a = ap.parse_args()

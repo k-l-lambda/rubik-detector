@@ -168,6 +168,7 @@ struct Observation {
 	int viewFace;                // face index (L R D U B F) in that view's own frame (its lighting group)
 	std::array<float, 3> lab;
 	double weight;               // the view's weight
+	int group;                   // the view's reliability group (EstimateOptions::reliability)
 };
 
 class Evidence {
@@ -175,8 +176,9 @@ public:
 	// Adds a view's samples (view frame). rotation: the rotation placing this view's frame into the common one if
 	// the caller knows it (relativeRotation chained over tracked frames), or -1 to find it by colour (fuse).
 	// weight: the view's share in the colour likelihood (e.g. 1/n for each of n frames of one pose, so that a pose
-	// held for many frames counts once and a single bad frame among them only by its share). Returns the view id.
-	int addView (const std::vector<FaceletSample>& samples, int rotation = -1, double weight = 1.0);
+	// held for many frames counts once and a single bad frame among them only by its share). group: views whose
+	// evidence stands or falls together (EstimateOptions::reliability; -1: the view on its own). Returns the view id.
+	int addView (const std::vector<FaceletSample>& samples, int rotation = -1, double weight = 1.0, int group = -1);
 	void removeView (int id);
 	void clear ();
 
@@ -201,6 +203,7 @@ private:
 		int rotation;
 		bool fixed;
 		double weight;
+		int group;
 	};
 	std::vector<View> list;
 	int nextId = 0;
@@ -227,6 +230,13 @@ struct EstimateOptions {
 	// per-observation outlier probability in the colour likelihood (0: none, the photo protocol). Accumulating many
 	// video frames, a few may be mis-located or mis-placed: with ε > 0 such a frame cannot veto a colour.
 	double outlier = 0;
+	// unknown reliability: the evidence of each group of views (by default each view) about a facelet is right with
+	// an unknown probability r and otherwise says nothing (any colour alike); r uniform on [0, 1] and integrated out,
+	// per facelet: P(c) ∝ ∫ Π_groups (r·L_g(c) + (1 − r)/6) dr, L_g the group's own posterior (uniform prior × Π p(x|c)
+	// over its observations). One decisive group gives 7/12, two agreeing ~0.90, three ~0.98, four ~0.997 — the
+	// rule of succession for six colours — however sharp each one's colour. The legal state and its confidence
+	// are then taken under these posteriors.
+	bool reliability = false;
 };
 
 struct StateEstimate {
