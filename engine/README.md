@@ -71,11 +71,15 @@ exact from two holds at ~6 s (three holds ~11.5 s); at 3× latency still exact f
 **Following turns (`tools/follow_tracker.py`).** Acquire as above; lock when the legal state is observed on all 54
 facelets, every confidence ≥ 0.99, the same in 3 estimates in a row (a five-face completion can be confidently wrong
 while the colour clusters are unsettled: on v103 it flipped between states, once at confidence 1.00 with 4 wrong).
-Then per well-fitted frame (lattice cost ≤ 1.5 × the recent median: mid-turn fits fail it) `rk_score_model` with the
-locked model scores S and its 18 single turns over the 24 view renamings (prior 10 nll per turn; < 1 ms); the 243
-two-turn states only when nothing one turn away explains the frame. A new state replaces S when it wins by ≥ 15 on 2
-consecutive frames (or ≥ 80 on one); unexplained for 6 frames: lost, acquire again. v103 (klstudio `?videoTwists=8`,
-30 fps): all 8 turns followed, no false switch, 0.2–1.2 s after each turn ends at 1× latency (1.3–2.3 s at 2×).
+Then each well-fitted frame (lattice cost ≤ 1.5 × the recent median: mid-turn fits fail it) is matched against the
+states at most two face turns away — S, 18 single and 243 double turns, cached per S — over the 24 view renamings
+with `rk_score_model` under the locked model (prior 10 nll per turn). The best is a match if at most 2 of the frame's
+samples conflict with it (`conflicts` / `rk_conflicts`: the colour there costs > 4 nll above the sample's best — a
+test of the stickers, not of the view's overall fit level, which drifts by 2 nll per sample between views). A new
+state replaces S when it wins by ≥ 15 on 2 consecutive frames (or ≥ 80 on one); no match on 3 frames in a row: global
+search (acquire again). v103 (klstudio `?videoTwists=8`, 30 fps): all 8 turns followed, no false switch, 0.3–1.2 s
+after each turn ends at 1× latency (1.3–2.3 s at 2×); with frames cut so two turns fall in one gap (v103-gaps2) the
+pairs are followed as one switch ("L' U'", "U F"); three in a gap (v103-gaps) start a global search.
 
 **Turns on a known state.** Keep the state and the `ColourModel` from the estimate. Per new frame (tracked pose,
 `sample`), `scoreStates(model, samples, g, {state, applyMoves(state, m) for m in faceTurnNames()})`: the lowest wins;

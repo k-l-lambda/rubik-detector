@@ -112,6 +112,11 @@ RK_API void rk_estimate_ex (int32_t views, const rk_sample* samples, const int32
 RK_API int32_t rk_score_model (const double mean[6][4], const double var[6][4], const rk_sample* samples, int32_t count,
 	int32_t rotation, int32_t n_states, const char* states, double* scores);
 
+// conflicts(): the samples (view facelets, written to out, up to 27) contradicting `state` placed by `rotation`;
+// returns their number, -1 on bad input
+RK_API int32_t rk_conflicts (const double mean[6][4], const double var[6][4], const rk_sample* samples, int32_t count,
+	int32_t rotation, const char* state, double threshold, int32_t out[27]);
+
 // Fuse and estimate as rk_estimate, then score candidate states (n_states × 54 letters, common frame) against the
 // samples of view `view` under the fitted colour model: scores[i] = negative log-likelihood (lower = better).
 RK_API void rk_score_states (int32_t views, const rk_sample* samples, const int32_t* counts, const int32_t* rotations,

@@ -11,18 +11,16 @@ worker back to back on the newest arrived frame, every step costing its measured
 	          ≥ --lock, and the same in --lock-stable estimates in a row, the state and the colour model are
 	          locked: follow.
 	follow    the state S is known; each well-fitted frame (lattice cost ≤ --evidence-cost and ≤ --relative-cost × the
-	          recent median: mid-turn frames fail it) is
-	          explained by S or by a state a few face turns away. The prior: the cube changes by turns, one at a
-	          time — each turn costs --move-cost nll. Candidates and rotations of the view frame (the 24, found by
-	          the colour of what the view sees) are scored together under the locked colour model (score_model,
-	          < 1 ms per frame):
-	            1. S and its 18 single turns. The best of them stands if it explains the frame as well as S usually
-	               does (per-sample nll within --bad of the running median of S's own fits).
-	            2. Otherwise the 2-turn states (243) too: a quick double turn, or two turns in one gap between good
-	               frames.
-	          A candidate C ≠ S replaces S when it beats S by ≥ --switch-margin on --confirm consecutive good frames
-	          (C the same each time), or on one frame by ≥ --strong-margin. Frames explained by nothing within reach
-	          for --lost-frames in a row: the state is lost, back to acquire (fresh evidence).
+	          recent median: mid-turn frames fail it) is matched against the states at most two face turns from S —
+	          S, its 18 single turns and 243 double turns (distinct states, the shorter way kept), cached per S. The
+	          prior: the cube changes by turns, each costing --move-cost nll. Candidates and the 24 renamings of the
+	          view frame are scored together under the locked colour model (score_model, a few ms per frame). The
+	          best is a match if at most --max-conflicts of the frame's samples conflict with it (their colour there
+	          costs > --conflict-nll above their most likely one, lighting fitted to the candidate: rk_conflicts) —
+	          a test of the stickers themselves, independent of how well this view fits overall. A candidate C ≠ S replaces S when it beats S by ≥ --switch-margin on --confirm
+	          consecutive frames (C the same each time), or on one frame by ≥ --strong-margin.
+	global    no match within two turns on --global-after frames in a row (more turns in one gap than that, or the
+	          state lost track of): a global search — acquire again from fresh evidence, as at the start.
 
 HUD: as state_tracker.py — the latest detection's stickers; top right the followed state (cube net in the locked
 colours; while acquiring, the evidence panel), the turns recognised so far, the last decision (stay / pending /
@@ -77,6 +75,20 @@ class Follower:
 		self.fits = []              # S's own per-sample nll on frames it explained
 		self.misses = 0
 		self.decision = "locked"
+		self.cache = (None, None)   # (S, its candidates)
+
+	def candidates(self):
+		"""(state, moves) within two face turns of S, distinct states, the fewest turns first"""
+		if self.cache[0] != self.state:
+			seen = {self.state}
+			out = [(self.state, "")]
+			first = neighbours(self.state)
+			for c in first + [c for state, m in first for c in neighbours(state, m)]:
+				if c[0] not in seen:
+					seen.add(c[0])
+					out.append(c)
+			self.cache = (self.state, out)
+		return self.cache[1]
 
 	def score(self, r, candidates):
 		"""best (score + prior, candidate index, rotation) over the candidates and the 24 view renamings"""
@@ -93,27 +105,22 @@ class Follower:
 
 	def step(self, r, frame):
 		"""one good detection: returns the decision record"""
-		candidates = [(self.state, "")] + neighbours(self.state)
+		candidates = self.candidates()
 		(total, i, g, s), n = self.score(r, candidates)
-		typical = np.median(self.fits[-30:]) if self.fits else None
-		depth = 1
-		if typical is not None and total / n > typical + self.a.bad:
-			# nothing one turn away explains it: two turns
-			two = [c for state, m in candidates[1:] for c in neighbours(state, m)]
-			candidates = candidates + two
-			(total, i, g, s), n = self.score(r, candidates)
-			depth = 2
 		stay = s[0]
-		record = {"frame": frame, "rotation": g, "depth": depth, "per_sample": total / n, "typical": typical}
-		if typical is not None and total / n > typical + self.a.bad:
+		# a match: the best candidate contradicted by at most --max-conflicts of the frame's samples
+		clash = re.conflicts(self.model, r, g, candidates[i][0], self.a.conflict_nll)
+		record = {"frame": frame, "rotation": g, "depth": len(candidates[i][1].split()), "per_sample": total / n,
+			"conflicts": len(clash), "state_conflicts": len(re.conflicts(self.model, r, g, self.state, self.a.conflict_nll))}
+		if len(clash) > self.a.max_conflicts:
 			self.misses += 1
-			record["decision"] = f"unexplained ({self.misses})"
+			record["decision"] = f"no match ({self.misses})"
 			self.pending = None
-			self.decision = record["decision"]
+			self.decision = f"no match within 2 turns: {len(clash)} stickers conflict ({self.misses}/{self.a.global_after})"
 			return record
 		self.misses = 0
+		self.fits.append(total / n)
 		if i == 0:
-			self.fits.append(stay / n)
 			others = np.delete(s, 0)
 			record.update(decision="stay", margin=float(others.min() - stay))
 			self.pending = None
@@ -131,7 +138,6 @@ class Follower:
 		if count >= self.a.confirm or margin >= self.a.strong_margin:
 			self.state = state
 			self.moves.append((moves, frame))
-			self.fits = [total / n]
 			self.pending = None
 			record["decision"] = "switch"
 			self.decision = f"turned {moves} (+{margin:.0f})"
@@ -164,8 +170,9 @@ def main():
 	ap.add_argument("--move-cost", type=float, default=10.0, help="prior: nll per face turn")
 	ap.add_argument("--switch-margin", type=float, default=15.0)
 	ap.add_argument("--strong-margin", type=float, default=80.0)
-	ap.add_argument("--bad", type=float, default=1.5, help="per-sample nll above the running median: not explained")
-	ap.add_argument("--lost-frames", type=int, default=6)
+	ap.add_argument("--conflict-nll", type=float, default=4.0, help="a sample conflicts with a state when its colour there costs this much more than its best")
+	ap.add_argument("--max-conflicts", type=int, default=2, help="conflicting samples a match may have (glare, a fingertip)")
+	ap.add_argument("--global-after", type=int, default=3, help="frames in a row with no match within two turns: global search")
 	ap.add_argument("--out", default=None)
 	a = ap.parse_args()
 	a.confirm_chain = 1
@@ -226,12 +233,12 @@ def main():
 		elif ev["good"] and tracker.fits_well(r):
 			rec = follower.step(r, i)
 			ev["follow"] = rec
-			if follower.misses >= a.lost_frames:
-				# lost: start over
+			if follower.misses >= a.global_after:
+				# no match within two turns: global search (acquire from scratch)
 				follower, est, est_count, stable = None, None, 0, []
 				tracker.frames, tracker.rotations, tracker.pending = [], [], []
 				tracker.collect = True
-				ev["lost"] = True
+				ev["global"] = True
 		ms = (time.perf_counter() - t0) * 1000
 		ev.update(ready=start + ms * a.latency_scale / 1000, ms=ms,
 			snapshot=None if follower is None else {"state": follower.state, "moves": [m for m, _ in follower.moves],
@@ -304,6 +311,14 @@ def main():
 			next(e["snapshot"]["state"] for e in dets if e["frame"] == s[1]), t["facelets"]) == 0), None)
 		print(f"  turn {t['move']:3s} done at {end:5.2f} s: " + (f"followed as {in_video(hit[0])} at {hit[2]:.2f} s (+{(hit[2] - end) * 1000:.0f} ms)" if hit else "NOT followed"))
 	print(f"  switches: {len(switches)} — " + " ".join(in_video(m) for m, _, _ in switches) + " (in the video's frame)")
+	for e in dets:
+		f = e.get("follow", {})
+		if f.get("decision") == "switch" or e.get("global") or "locked" in e:
+			what = f"switch {in_video(f['candidate'])}" if f.get("decision") == "switch" else "GLOBAL search" if e.get("global") else "lock"
+			state = e["snapshot"]["state"] if e.get("snapshot") else None
+			wrong = re.compare_states(state, truth_at(e["frame"])) if state else None
+			print(f"    {e['ready']:6.2f} s  frame {e['frame'] + 1:4d} ({labels['views'][e['frame']]['phase']:8s}) {what:18s}"
+				+ (f" state {'exact' if wrong == 0 else str(wrong) + ' wrong'}" if wrong is not None else ""))
 	fr = [f for f in log["frames"] if f["following"]]
 	print(f"  shown frames following: {len(fr)}, state exact on {sum(f['wrong'] == 0 for f in fr)} "
 		f"(settle/hold: {sum(f['wrong'] == 0 for f in fr if f['phase'] in ('settle', 'hold'))}/{sum(f['phase'] in ('settle', 'hold') for f in fr)})")

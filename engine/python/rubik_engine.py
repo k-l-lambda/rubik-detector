@@ -71,6 +71,9 @@ _lib.rk_estimate_ex.argtypes = [ctypes.c_int32, ctypes.POINTER(Sample), ctypes.P
 _lib.rk_score_model.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(Sample), ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
 	ctypes.c_char_p, ctypes.POINTER(ctypes.c_double)]
 _lib.rk_score_model.restype = ctypes.c_int32
+_lib.rk_conflicts.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(Sample), ctypes.c_int32, ctypes.c_int32, ctypes.c_char_p,
+	ctypes.c_double, ctypes.POINTER(ctypes.c_int32 * 27)]
+_lib.rk_conflicts.restype = ctypes.c_int32
 _lib.rk_apply_moves.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
 _lib.rk_compare_states.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
 
@@ -186,6 +189,19 @@ def score_model(model, view, rotation, states):
 			"".join(states).encode(), scores):
 		raise ValueError("bad input")
 	return np.array(scores)
+
+
+def conflicts(model, view, rotation, state, threshold=4.0):
+	"""view facelets whose sample contradicts `state` (placed by `rotation`): its colour there costs > threshold nll
+	above its most likely colour under the model"""
+	mean = np.ascontiguousarray(model["mean"], dtype=np.float64)
+	var = np.ascontiguousarray(model["var"], dtype=np.float64)
+	raw = view["_raw"]
+	out = (ctypes.c_int32 * 27)()
+	n = _lib.rk_conflicts(mean.ctypes.data, var.ctypes.data, raw.samples, raw.sample_count, rotation, state.encode(), threshold, ctypes.byref(out))
+	if n < 0:
+		raise ValueError("bad input")
+	return list(out[:n])
 
 
 def apply_moves(state, moves):

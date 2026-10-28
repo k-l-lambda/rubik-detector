@@ -270,6 +270,11 @@ StateEstimate estimateState (const Evidence& evidence, const EstimateOptions& op
 std::vector<double> scoreStates (const ColourModel& model, const std::vector<FaceletSample>& samples, int rotation,
 	const std::vector<std::string>& states);
 
+// The view's samples that contradict a state: their colour under the state costs more than `threshold` nll above
+// their most likely colour (lighting offsets fitted to the state, as scoreStates). Returns their view facelets.
+std::vector<int> conflicts (const ColourModel& model, const std::vector<FaceletSample>& samples, int rotation,
+	const std::string& state, double threshold = 4.0);
+
 // --- cube --------------------------------------------------------------------------------------------------------
 
 // The 24 whole-cube rotations (integer 3×3, row-major) and their facelet permutations.

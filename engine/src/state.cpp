@@ -481,6 +481,80 @@ StateEstimate estimateState (const Evidence& evidence, const EstimateOptions& op
 	return out;
 }
 
+namespace {
+
+// per valid sample (view facelet, colour costs) under a candidate state, with this view's lighting offsets fitted to it
+std::vector<std::pair<int, std::array<double, 6>>> candidateCosts (const ColourModel& model, const std::vector<FaceletSample>& samples,
+	int rotation, const std::string& state) {
+	const CubeTables& T = tables();
+	const double T_DOF = 4.0, OFFSET_SHRINK = 2.0;
+	std::array<double, 6> logdet{};
+	for (int c = 0; c < 6; c++)
+		for (int d = 0; d < 4; d++)
+			logdet[c] += std::log(model.var[c][d]);
+	std::vector<std::pair<int, std::array<double, 4>>> xs;
+	for (const FaceletSample& s : samples)
+		if (s.valid)
+			xs.push_back({s.facelet, weigh(s.lab.data())});
+	if (state.size() != 54)
+		throw std::invalid_argument("a state has 54 facelets");
+	std::vector<int> colour(xs.size());
+	for (size_t i = 0; i < xs.size(); i++) {
+		const char* p = std::strchr(FACES, state[T.perms[rotation][xs[i].first]]);
+		if (!p)
+			throw std::invalid_argument("state letters must be L R D U B F");
+		colour[i] = int(p - FACES);
+	}
+	std::map<int, std::array<double, 4>> offset;
+	for (int f = 0; f < 6; f++) {
+		std::vector<double> res[2];
+		for (size_t i = 0; i < xs.size(); i++)
+			if (T.faceOf[xs[i].first] == f)
+				for (int j = 0; j < 2; j++)
+					res[j].push_back(xs[i].second[2 + j] - model.mean[colour[i]][2 + j]);
+		if (res[0].empty())
+			continue;
+		std::array<double, 4> o{0, 0, 0, 0};
+		double n = double(res[0].size());
+		for (int j = 0; j < 2; j++) {
+			std::vector<double>& v = res[j];
+			std::sort(v.begin(), v.end());
+			double med = v.size() % 2 ? v[v.size() / 2] : (v[v.size() / 2 - 1] + v[v.size() / 2]) / 2;
+			o[2 + j] = med * n / (n + OFFSET_SHRINK);
+		}
+		offset[f] = o;
+	}
+	std::vector<std::pair<int, std::array<double, 6>>> out;
+	for (size_t i = 0; i < xs.size(); i++) {
+		const auto& o = offset[T.faceOf[xs[i].first]];
+		std::array<double, 6> cost{};
+		for (int c = 0; c < 6; c++) {
+			double maha = 0;
+			for (int d = 0; d < 4; d++) {
+				double r = xs[i].second[d] - o[d] - model.mean[c][d];
+				maha += r * r / model.var[c][d];
+			}
+			cost[c] = 0.5 * logdet[c] + 0.5 * (T_DOF + 4) * std::log1p(maha / T_DOF);
+		}
+		out.push_back({xs[i].first, cost});
+	}
+	return out;
+}
+
+}
+
+std::vector<int> conflicts (const ColourModel& model, const std::vector<FaceletSample>& samples, int rotation,
+	const std::string& state, double threshold) {
+	const CubeTables& T = tables();
+	std::vector<int> out;
+	for (const auto& entry : candidateCosts(model, samples, rotation, state)) {
+		int c = int(std::strchr(FACES, state[T.perms[rotation][entry.first]]) - FACES);
+		if (entry.second[c] - *std::min_element(entry.second.begin(), entry.second.end()) > threshold)
+			out.push_back(entry.first);
+	}
+	return out;
+}
+
 std::vector<double> scoreStates (const ColourModel& model, const std::vector<FaceletSample>& samples, int rotation,
 	const std::vector<std::string>& states) {
 	const CubeTables& T = tables();

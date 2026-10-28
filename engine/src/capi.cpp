@@ -337,6 +337,33 @@ int32_t rk_score_model (const double mean[6][4], const double var[6][4], const r
 	}
 }
 
+int32_t rk_conflicts (const double mean[6][4], const double var[6][4], const rk_sample* samples, int32_t count,
+	int32_t rotation, const char* state, double threshold, int32_t out[27]) {
+	try {
+		ColourModel model;
+		for (int c = 0; c < 6; c++)
+			for (int d = 0; d < 4; d++) {
+				model.mean[c][d] = mean[c][d];
+				model.var[c][d] = var[c][d];
+			}
+		std::vector<FaceletSample> list;
+		for (int i = 0; i < count; i++) {
+			FaceletSample s;
+			s.facelet = samples[i].facelet;
+			s.valid = samples[i].valid != 0;
+			s.lab = {samples[i].lab[0], samples[i].lab[1], samples[i].lab[2]};
+			list.push_back(s);
+		}
+		std::vector<int> r = conflicts(model, list, rotation, std::string(state, 54), threshold);
+		for (size_t i = 0; i < r.size() && i < 27; i++)
+			out[i] = r[i];
+		return int32_t(r.size());
+	}
+	catch (const std::exception&) {
+		return -1;
+	}
+}
+
 int32_t rk_apply_moves (const char* state, const char* moves, char out[55]) {
 	try {
 		std::string r = applyMoves(state, moves);
