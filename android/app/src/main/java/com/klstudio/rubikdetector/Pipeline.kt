@@ -7,9 +7,12 @@
 //	focal     the focal length from the first frame with a cube (Detector.estimateFocal), or given (camera intrinsics)
 //	acquire   every good frame is evidence: frames linked to the previous one (small rotation up to a renaming,
 //	          agreeing colours) form a chain placed through the renamings; a chain's first frame is placed by
-//	          colour. Per facelet the Bayesian colour posterior (each frame right with an unknown probability,
-//	          uniform prior), from five faces the legal state. Lock when it is observed on all 54 facelets, every
-//	          confidence ≥ lockConfidence, the same in lockStable estimates in a row.
+//	          colour. Before each estimate: per facelet the samples far from its consensus colour (across chains)
+//	          are left out (a finger over a sticker), and a layer the tracker saw turn loses its older evidence.
+//	          Per facelet the Bayesian colour posterior (each chain — the frames of one hold stand or fall together
+//	          — right with an unknown probability, uniform prior), from five faces the legal state. Lock when it is
+//	          observed on all 54 facelets, every confidence ≥ lockConfidence, the same in lockStable estimates in a
+//	          row.
 //	follow    each well-fitted frame is matched against the states at most two face turns away (262, cached per
 //	          state) over the 24 view renamings, under the locked colour model; a match has ≤ maxConflicts
 //	          contradicting stickers. A new state replaces the followed one when it wins by ≥ switchMargin on
@@ -32,6 +35,15 @@ class Settings(
 	var strongMargin: Double = 80.0,
 	var confirm: Int = 2,
 	var hintBonus: Double = 8.0,        // follow: nll off the turn prior of candidates turning the face the tracker saw turn
+	var consensusDelta: Double = 12.0,  // acquire: a sample further than this (Lab, L halved) from its facelet's consensus is left out
+	// acquire: the unknown reliability per block of a chain (its frames within reliabilitySeconds stand or fall together:
+	// consecutive frames of one hold share a finger, a reflection; 0 = per frame, which is overconfident: on a real video
+	// confidence 0.998 for a state with two colours merged; a whole chain or 1 s blocks are too strict: no lock on v103;
+	// 0.5 s locks it at 16 s, per frame at 12 s)
+	var reliabilitySeconds: Double = 0.5,
+	var dropCheckFacelets: Int = 4,     // acquire: a turn hint is decided once this many of the layer's facelets are seen before and after
+	var dropChangedShare: Double = 0.4, // …and the layer's evidence dropped if at least this share of them changed colour (else kept)
+	var minClusterGap: Double = 12.0,   // lock: the closest two letters' colours (median Lab of their facelets, L halved) at least this apart
 	var conflictNll: Double = 4.0,
 	var maxConflicts: Int = 2,
 	var globalAfter: Int = 3,
@@ -48,7 +60,7 @@ class LinkInfo(val angle: Double, val colour: Double, val linked: Boolean)
 
 // The tracker saw a layer turn (its points left the rigid pose for a few frames): the face's outward normal in the
 // camera frame of the frame being detected. id: the tracked frame it was seen on (a hint is used for one switch).
-class TurnHint(val id: Long, val normal: DoubleArray)
+class TurnHint(val id: Long, val normal: DoubleArray, val start: Double = 0.0, val end: Double = 0.0)   // start / end: the run's times (s)
 
 class FollowInfo(
 	val state: String,
@@ -111,6 +123,7 @@ class Snapshot(
 	val steps: StepTimes,
 	val fits: Boolean,              // good and evidence-grade (the relative cost gate): a pose to re-seed a tracker from
 	val placement: Int,             // the detection's view frame placed into the estimate's frame (rotation index; -1 none)
+	val clusterGap: Double,         // the estimate's closest two letters' colours (minClusterGap); NaN none
 )
 
 class Pipeline(val settings: Settings = Settings()) {
@@ -160,6 +173,8 @@ class Pipeline(val settings: Settings = Settings()) {
 	}
 
 	private fun clearEvidence() {
+		droppedUntil = -1.0
+		pendingDrops.clear()
 		frames.clear()
 		rotations.clear()
 		pending.clear()
@@ -206,7 +221,7 @@ class Pipeline(val settings: Settings = Settings()) {
 		val (r, link) = track(detector, frame, time, prior)
 		val good = r.ok && r.latticeCost <= settings.fallbackCost && r.presence >= settings.presenceThreshold
 		when (stage) {
-			Stage.ACQUIRE -> timed({ tEstimate += it }) { acquire(time) }
+			Stage.ACQUIRE -> timed({ tEstimate += it }) { acquire(time, r, hint) }
 			Stage.FOLLOW -> if (good && fitsWell(r)) {
 				val f = follower!!
 				val decision = timed({ tFollow += it }) { f.step(r, hint) }
@@ -236,7 +251,7 @@ class Pipeline(val settings: Settings = Settings()) {
 		val fits = r != null && good && fitsWell(r)
 		val placement = if (follow != null) follow.placement else (r?.rotation ?: -1)
 		return Snapshot(stage, presence >= settings.presenceThreshold, presence, time, frame, fx, focal, r, good, link, frames.size, chainCount, covered, estimate,
-			stable.size, follow, net, (System.nanoTime() - started) / 1e6, evs, steps, fits, placement)
+			stable.size, follow, net, (System.nanoTime() - started) / 1e6, evs, steps, fits, placement, clusterGap)
 	}
 
 	private fun net(follow: FollowInfo?): Net {
@@ -395,14 +410,148 @@ class Pipeline(val settings: Settings = Settings()) {
 		return if (g >= 0) g else null
 	}
 
-	private fun acquire(time: Double) {
+	// the face of the state's frame whose outward normal (camera frame) is `n`, for a detection placed by g
+	private fun faceOf(r: Detection, g: Int, n: DoubleArray): Char? {
+		for (fv in 0 until 6) {
+			val axis = fv / 2
+			val sign = if (fv % 2 == 1) 1.0 else -1.0
+			if ((0 until 3).sumOf { sign * r.R[it * 3 + axis] * n[it] } > 0.8)
+				return Cube.FACES[Cube.perms[g][fv * 9 + 4] / 9]
+		}
+		return null
+	}
+
+	private var droppedUntil = -1.0     // the end of the last turn whose layer's evidence was dropped
+	var clusterGap = Double.NaN         // the last estimate's (minClusterGap)
+		private set
+
+	// the closest two letters' colours of a state: per letter the median of its facelets' kept observations
+	private fun gapOf(state: String): Double {
+		val obs = observations()
+		val med = Cube.FACES.map { c ->
+			val labs = (0 until 54).filter { state[it] == c }.flatMap { obs[it] }
+			if (labs.isEmpty()) null else DoubleArray(3) { i -> labs.map { it[i].toDouble() }.sorted()[labs.size / 2] * (if (i == 0) 0.5 else 1.0) }
+		}
+		var gap = Double.POSITIVE_INFINITY
+		for (a in 0 until 6)
+			for (b in a + 1 until 6) {
+				val x = med[a] ?: continue
+				val y = med[b] ?: continue
+				gap = minOf(gap, Math.sqrt((0 until 3).sumOf { (x[it] - y[it]) * (x[it] - y[it]) }))
+			}
+		return gap
+	}
+
+	// A layer the tracker saw turn (a hint) is checked by colour before its older evidence goes: the tracker also signals
+	// in whole-cube turns and blur, and a dropped layer costs the lock seconds. Once enough of its facelets are seen
+	// before and after the turn, it is dropped if enough of them changed colour, else the hint is discarded.
+	private class PendingDrop(val face: Char, val layer: List<Int>, val end: Double, val made: Double)
+	private val pendingDrops = ArrayList<PendingDrop>()
+
+	private fun dropTurned(r: Detection?, hint: TurnHint?, time: Double) {
+		if (hint == null || r == null || hint.end <= droppedUntil)
+			return
+		val g = r.rotation ?: return
+		val face = faceOf(r, g, hint.normal) ?: return
+		droppedUntil = hint.end
+		pendingDrops.add(PendingDrop(face, MiniCube.layer(Cube.FACES.indexOf(face)), hint.end, time))
+		event("layer $face seen turning: checking its colours", time)
+	}
+
+	private fun decideDrops(time: Double) {
+		val f = { lab: FloatArray -> doubleArrayOf(lab[0] * 0.5, lab[1].toDouble(), lab[2].toDouble()) }
+		val median = { list: List<DoubleArray> -> DoubleArray(3) { c -> list.map { it[c] }.sorted()[list.size / 2] } }
+		for (p in pendingDrops.toList()) {
+			var seen = 0
+			var changed = 0
+			for (k in p.layer) {
+				val pre = ArrayList<DoubleArray>()
+				val post = ArrayList<DoubleArray>()
+				for (v in frames.indices) {
+					val fr = frames[v]
+					if (fr.dropped?.get(k) == true)
+						continue
+					for (s in fr.samples)
+						if (s.valid && Cube.perms[rotations[v]][s.facelet] == k)
+							if (fr.time <= p.end) pre.add(f(s.lab)) else if (fr.time > p.end + 0.1) post.add(f(s.lab))
+				}
+				if (pre.size >= 2 && post.size >= 2) {
+					seen++
+					val a = median(pre)
+					val b = median(post)
+					if (Math.sqrt((0 until 3).sumOf { (a[it] - b[it]) * (a[it] - b[it]) }) >= settings.consensusDelta)
+						changed++
+				}
+			}
+			if (seen >= settings.dropCheckFacelets) {
+				pendingDrops.remove(p)
+				if (changed >= settings.dropChangedShare * seen) {
+					var n = 0
+					for (v in frames)
+						if (v.time <= p.end + 0.1) {
+							val d = v.dropped ?: BooleanArray(54).also { v.dropped = it }
+							for (k in p.layer)
+								d[k] = true
+							n++
+						}
+					stable.clear()
+					event("layer ${p.face} turned ($changed/$seen facelets changed): its evidence from $n frames before dropped", time)
+				}
+				else
+					event("layer ${p.face}: $changed/$seen facelets changed, no turn: evidence kept", time)
+			}
+			else if (time - p.made > 6.0) {
+				pendingDrops.remove(p)
+				event("layer ${p.face}: not seen after the turn signal: evidence kept", time)
+			}
+		}
+	}
+
+	// per sample whether it is evidence: not on a dropped facelet, and within consensusDelta of its facelet's consensus
+	// colour — per facelet the chain medians, the one with the most (√size-weighted) others within the delta
+	private fun keepMasks() {
+		val f = { lab: FloatArray -> doubleArrayOf(lab[0] * 0.5, lab[1].toDouble(), lab[2].toDouble()) }
+		val dist = { a: DoubleArray, b: DoubleArray -> Math.sqrt((0 until 3).sumOf { (a[it] - b[it]) * (a[it] - b[it]) }) }
+		val byFacelet = HashMap<Int, HashMap<Int, ArrayList<DoubleArray>>>()
+		for (v in frames.indices)
+			frames[v].samples.forEach { s ->
+				val k = Cube.perms[rotations[v]][s.facelet]
+				if (s.valid && frames[v].dropped?.get(k) != true)
+					byFacelet.getOrPut(k) { HashMap() }.getOrPut(frames[v].chain) { ArrayList() }.add(f(s.lab))
+			}
+		val mode = HashMap<Int, DoubleArray>()
+		for ((k, chains) in byFacelet) {
+			val meds = chains.values.map { list -> DoubleArray(3) { c -> list.map { it[c] }.sorted()[list.size / 2] } }
+			val w = chains.values.map { Math.sqrt(it.size.toDouble()) }
+			mode[k] = meds[meds.indices.maxByOrNull { a -> meds.indices.sumOf { b -> if (dist(meds[a], meds[b]) < settings.consensusDelta) w[b] else 0.0 } }!!]
+		}
+		for (v in frames.indices) {
+			val fr = frames[v]
+			fr.keep = BooleanArray(fr.samples.size) { i ->
+				val s = fr.samples[i]
+				val k = Cube.perms[rotations[v]][s.facelet]
+				s.valid && fr.dropped?.get(k) != true && mode[k]?.let { dist(f(s.lab), it) < settings.consensusDelta } ?: false
+			}
+		}
+	}
+
+	private fun acquire(time: Double, r: Detection?, hint: TurnHint?) {
+		dropTurned(r, hint, time)
 		if (frames.size == estimatedCount || frames.isEmpty())
 			return
 		estimatedCount = frames.size
-		val covered = frames.indices.flatMap { v -> frames[v].samples.filter { it.valid }.map { Cube.perms[rotations[v]][it.facelet] } }.toSet().size
-		val e = Engine.estimate(frames, rotations.toIntArray(), legal = covered >= settings.legalFrom, partial = true, reliability = true)
+		decideDrops(time)
+		keepMasks()
+		val covered = frames.indices.flatMap { v -> frames[v].samples.filterIndexed { i, s -> s.valid && frames[v].keep?.get(i) != false }
+			.map { Cube.perms[rotations[v]][it.facelet] } }.toSet().size
+		val e = Engine.estimate(frames, rotations.toIntArray(), legal = covered >= settings.legalFrom, partial = true, reliability = true,
+			groups = if (settings.reliabilitySeconds > 0) IntArray(frames.size) { frames[it].chain * 4096 + (frames[it].time / settings.reliabilitySeconds).toInt() % 4096 } else null)
 		estimate = e
-		val sure = e.ok && e.legal && e.minConfidence >= settings.lockConfidence && e.coverage >= settings.lockCoverage
+		clusterGap = if (e.ok && e.legal) gapOf(e.state!!) else Double.NaN
+		// a cube's six colours are distinct: two letters of one colour (a finger read as a sticker, two colours merged)
+		// is no state to lock, however confident its facelets
+		val sure = e.ok && e.legal && e.minConfidence >= settings.lockConfidence && e.coverage >= settings.lockCoverage &&
+			clusterGap >= settings.minClusterGap
 		if (sure && (stable.isEmpty() || stable.last() == e.state))
 			stable.add(e.state!!)
 		else {
@@ -421,8 +570,8 @@ class Pipeline(val settings: Settings = Settings()) {
 	private fun lockColours(e: Estimate): Map<Char, Int> {
 		val labs = HashMap<Char, ArrayList<FloatArray>>()
 		for (v in frames.indices)
-			for (s in frames[v].samples)
-				if (s.valid)
+			for ((i, s) in frames[v].samples.withIndex())
+				if (s.valid && frames[v].keep?.get(i) != false)
 					labs.getOrPut(e.state!![Cube.perms[rotations[v]][s.facelet]]) { ArrayList() }.add(s.lab)
 		return labs.mapValues { (_, list) ->
 			val m = FloatArray(3) { c -> list.map { it[c] }.sorted()[list.size / 2] }
@@ -434,8 +583,8 @@ class Pipeline(val settings: Settings = Settings()) {
 	fun observations(): List<List<FloatArray>> {
 		val out = List(54) { ArrayList<FloatArray>() }
 		for (v in frames.indices)
-			for (s in frames[v].samples)
-				if (s.valid)
+			for ((i, s) in frames[v].samples.withIndex())
+				if (s.valid && frames[v].keep?.get(i) != false)
 					out[Cube.perms[rotations[v]][s.facelet]].add(s.lab)
 		return out
 	}

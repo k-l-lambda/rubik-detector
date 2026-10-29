@@ -30,13 +30,16 @@ class Detection(
 	var rotation: Int? = null       // placement in the evidence's cube frame
 	var rel = 0                     // renaming into its chain's first frame
 	var linkedTo: Detection? = null
+	var keep: BooleanArray? = null  // per sample whether it is evidence (null: all valid ones), set by the pipeline
+	var dropped: BooleanArray? = null   // per common facelet: dropped from this frame's evidence (its layer turned since)
 
-	// per sample (facelet, valid, L, a, b), as the estimate and scoring calls take them
+	// per sample (facelet, valid, L, a, b), as the estimate and scoring calls take them (a sample not kept: invalid)
 	fun packed(): DoubleArray {
 		val out = DoubleArray(samples.size * 5)
+		val k = keep
 		samples.forEachIndexed { i, s ->
 			out[i * 5] = s.facelet.toDouble()
-			out[i * 5 + 1] = if (s.valid) 1.0 else 0.0
+			out[i * 5 + 1] = if (s.valid && (k == null || k[i])) 1.0 else 0.0
 			out[i * 5 + 2] = s.lab[0].toDouble()
 			out[i * 5 + 3] = s.lab[1].toDouble()
 			out[i * 5 + 4] = s.lab[2].toDouble()
@@ -79,8 +82,8 @@ object Engine {
 	@JvmStatic external fun nativeDetect(handle: Long, width: Int, height: Int, fx: Double, fy: Double, cx: Double, cy: Double,
 		prior: DoubleArray?, workWidth: Int, keepSegments: Boolean): DoubleArray
 	@JvmStatic external fun nativeEstimateFocal(handle: Long, width: Int, height: Int): DoubleArray
-	@JvmStatic external fun nativeEstimate(samples: DoubleArray, counts: IntArray, rotations: IntArray, legal: Boolean, partial: Boolean,
-		reliability: Boolean): DoubleArray
+	@JvmStatic external fun nativeEstimate(samples: DoubleArray, counts: IntArray, rotations: IntArray, groups: IntArray?, legal: Boolean,
+		partial: Boolean, reliability: Boolean): DoubleArray
 	@JvmStatic external fun nativeScoreModel(mean: DoubleArray, variance: DoubleArray, samples: DoubleArray, rotation: Int, states: String): DoubleArray
 	@JvmStatic external fun nativeConflicts(mean: DoubleArray, variance: DoubleArray, samples: DoubleArray, rotation: Int, state: String,
 		threshold: Double): IntArray
@@ -101,7 +104,8 @@ object Engine {
 		return List(o.size / 9) { i -> Pair(o[i * 9].toInt(), FloatArray(8) { o[i * 9 + 1 + it].toFloat() }) }
 	}
 
-	fun estimate(views: List<Detection>, rotations: IntArray, legal: Boolean, partial: Boolean, reliability: Boolean): Estimate {
+	// groups: per view its reliability group (frames of a chain stand or fall together), null: each view its own
+	fun estimate(views: List<Detection>, rotations: IntArray, legal: Boolean, partial: Boolean, reliability: Boolean, groups: IntArray? = null): Estimate {
 		val packed = views.map { it.packed() }
 		val samples = DoubleArray(packed.sumOf { it.size })
 		var at = 0
@@ -109,7 +113,7 @@ object Engine {
 			p.copyInto(samples, at)
 			at += p.size
 		}
-		val o = nativeEstimate(samples, IntArray(views.size) { views[it].samples.size }, rotations, legal, partial, reliability)
+		val o = nativeEstimate(samples, IntArray(views.size) { views[it].samples.size }, rotations, groups, legal, partial, reliability)
 		var i = 7
 		val rots = IntArray(views.size) { o[i++].toInt() }
 		val colours = IntArray(54) { o[i++].toInt() }

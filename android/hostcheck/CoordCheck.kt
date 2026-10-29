@@ -103,6 +103,9 @@ fun main(args: Array<String>) {
 	val coord = Coordinator(ts)
 	System.getenv("WORK_WIDTH")?.toIntOrNull()?.let { coord.pipeline.settings.workWidth = it }
 	System.getenv("MAX_EVIDENCE")?.toIntOrNull()?.let { coord.pipeline.settings.maxEvidence = it }
+	System.getenv("BLOCK")?.toDoubleOrNull()?.let { coord.pipeline.settings.reliabilitySeconds = it }
+	System.getenv("CONSENSUS")?.toDoubleOrNull()?.let { coord.pipeline.settings.consensusDelta = it }
+	System.getenv("GAP")?.toDoubleOrNull()?.let { coord.pipeline.settings.minClusterGap = it }
 	fxGiven?.let { coord.pipeline.useFocal(it) }
 	val detector = Detector()
 	var buffer: ByteBuffer? = null
@@ -136,6 +139,8 @@ fun main(args: Array<String>) {
 	var trackerLast = -1
 	var detectorLast = -1L
 	val trackMs = ArrayList<Double>()
+	var lastDrop = ""
+	var lastReport = -1
 	val detectMs = ArrayList<Double>()
 	while (true) {
 		var ti = Math.floor((trackerFree - camera) * fps + 1e-9).toInt()
@@ -173,6 +178,21 @@ fun main(args: Array<String>) {
 			if (snap != null) {
 				pending.add(Triple(detectorFree, di, snap))
 				detections.add(Triple(detectorFree, di, snap))
+				if (System.getenv("PURITY") != null) {
+					// every ~3 s while acquiring: the estimate
+					val e = snap.estimate
+					if (snap.stage.toString() == "ACQUIRE" && e != null && e.ok && (detectorFree / 3).toInt() != lastReport) {
+						lastReport = (detectorFree / 3).toInt()
+						println(String.format("  %6.2f s acquiring: %d/54, legal %b, min confidence %.2f, colours %.0f apart, %s", detectorFree, e.coverage, e.legal,
+							e.minConfidence, snap.clusterGap, if (e.legal) purity(coord.pipeline, e.state!!) else ""))
+					}
+					val prevStage = detections.getOrNull(detections.size - 2)?.third?.stage
+					if (snap.stage.toString() == "FOLLOW" && prevStage?.toString() != "FOLLOW")
+						println(String.format("  %6.2f s locked: ", detectorFree) + purity(coord.pipeline, snap.follow!!.state))
+					if (snap.stage.toString() == "ACQUIRE" && prevStage?.toString() == "FOLLOW")
+						println(String.format("  %6.2f s back to acquiring", detectorFree))
+					snap.events.lastOrNull()?.takeIf { it.contains("layer ") && it != lastDrop }?.let { lastDrop = it; println("  " + it) }
+				}
 			}
 		}
 	}

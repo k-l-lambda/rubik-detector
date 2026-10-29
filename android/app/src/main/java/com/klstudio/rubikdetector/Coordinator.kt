@@ -81,7 +81,8 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 	private var turnRun = 0
 	private var turnRunStart = -1L
 	private var turnRunNormal: DoubleArray? = null
-	private class Signal(val normal: DoubleArray, val track: Track, val time: Double)
+	private var turnRunTime = 0.0
+	private class Signal(val normal: DoubleArray, val track: Track, val time: Double, val start: Double)
 	private val signals = LinkedHashMap<Long, Signal>()
 	// the mini cube: the follower's moves animated, newest last (move, start time)
 	private val animations = ArrayList<Pair<String, Double>>()
@@ -192,11 +193,11 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 		val (id, sig) = synchronized(signals) { signals.entries.lastOrNull()?.toPair() } ?: return null
 		if (time - sig.time > settings.hintSeconds)
 			return null
-		val now = synchronized(history) { history[index]?.first } ?: return TurnHint(id, sig.normal)
+		val now = synchronized(history) { history[index]?.first } ?: return TurnHint(id, sig.normal, sig.start, sig.time)
 		val (_, g) = Cube.frameMatch(sig.track.R, now.R)
 		val dR = Cube.mul(now.R, Cube.transpose(Cube.renamed(sig.track.R, g)))
 		val n = sig.normal
-		return TurnHint(id, DoubleArray(3) { r -> dR[r * 3] * n[0] + dR[r * 3 + 1] * n[1] + dR[r * 3 + 2] * n[2] })
+		return TurnHint(id, DoubleArray(3) { r -> dR[r * 3] * n[0] + dR[r * 3 + 1] * n[1] + dR[r * 3 + 2] * n[2] }, sig.start, sig.time)
 	}
 
 	fun post(index: Long, snapshot: Snapshot) {
@@ -268,8 +269,8 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 				}
 			text = when {
 				e == null || !e.ok -> "state: no evidence yet"
-				e.legal -> String.format("state confidence %.2f (Π over the facelets; min %.2f), %d/54 observed",
-					e.confidence.fold(1.0) { a, c -> a * c }, e.minConfidence, e.coverage)
+				e.legal -> String.format("state confidence %.2f (Π over the facelets; min %.2f), %d/54 observed, colours %.0f apart",
+					e.confidence.fold(1.0) { a, c -> a * c }, e.minConfidence, e.coverage, s.clusterGap)
 				else -> String.format("colours only: %d/54 observed (a legal state from 45)", e.coverage)
 			}
 		}
@@ -322,13 +323,14 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 				else if (track.turning) {
 					turnRun = 1
 					turnRunStart = index
+					turnRunTime = time
 				}
 				else
 					turnRun = 0
 				turnRunNormal = if (track.turning) track.turnNormal else null
 				if (turnRun >= settings.turnFrames)
 					synchronized(signals) {
-						signals[turnRunStart] = Signal(track.turnNormal, track, time)
+						signals[turnRunStart] = Signal(track.turnNormal, track, time, turnRunTime)
 						while (signals.size > 8)
 							signals.remove(signals.keys.first())
 					}

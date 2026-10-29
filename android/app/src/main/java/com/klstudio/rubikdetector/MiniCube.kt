@@ -41,6 +41,9 @@ object MiniCube {
 		IntArray(3) { i -> Math.round(normal[k][i] + (k % 3 - 1) * right[k][i] + ((k % 9) / 3 - 1) * down[k][i]).toInt() }
 	}
 
+	// the facelets of face f's outer layer (its 9 and the 12 of the faces around on its cubies)
+	fun layer(face: Int): List<Int> = (0 until 54).filter { cubie[it][AXIS[face][0]] == AXIS[face][1] }
+
 	// a colour's saturation by confidence: none (a sixth, chance) grey, full the colour
 	fun withConfidence(argb: Int, confidence: Double): Int {
 		val c = ((confidence - 1.0 / 6) / (5.0 / 6)).coerceIn(0.0, 1.0)

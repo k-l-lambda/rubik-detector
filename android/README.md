@@ -54,6 +54,24 @@ On the real video the track is lost under the hand and in blur (~10 times in 36 
 (~0.8 s) often comes too late to catch up from; the tracked HUD is then far better where it is shown, the detection
 alone everywhere stale. Not verified on a device: CameraSession.kt / MainActivity.kt changes are not compiled here.
 
+## Acquiring on a real hand-held video
+
+Three changes after `engine/tools/confidence_check.py` showed why the real video's confidence stuck at 0.5–0.9 (the
+camera signal is clean on uncovered stickers; the evidence was not):
+- a finger over a sticker: 19–25 % of the samples were nearest skin, merging clusters. Per facelet, samples further
+  than 12 (Lab, L halved) from its consensus colour across chains are left out (`consensusDelta`);
+- overconfidence: each frame was an independent piece of evidence, but consecutive frames of a hold share the same
+  finger — confidence 0.998 for a state with two letters of one colour and no blue. The unknown reliability is now
+  per 0.5 s block of a chain (`reliabilitySeconds`; a whole chain or 1 s blocks never locked v103), and a state whose
+  closest two letters' colours are under 12 apart is not locked (`minClusterGap`);
+- turns while acquiring: a layer the tracker sees turn is checked by colour — its facelets seen before and after; it
+  loses its older evidence only if ≥ 40 % of them changed (false signals in whole-cube turns are discarded).
+v103 still locks at 11.6 s, follows all 8 twists, the mini cube right on every following frame. The real video no
+longer locks a wrong state; the two real turns are found by colour (10/15, 10/12 facelets changed), after them the
+estimate's six letters are six colours (purity 76 %), confidence 0.5–0.76 — not locked: in this clip the cube is
+turned before all faces have been seen still, and the same fingers cover the same stickers throughout. A clip that
+shows the faces before turning is the next real test.
+
 ## Turn signal and the reconstructed cube
 
 The tracker reports which outer layer's points stop fitting the rigid pose (`TrackResult::turning`, the face's

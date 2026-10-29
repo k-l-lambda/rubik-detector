@@ -169,20 +169,25 @@ JNIEXPORT jdoubleArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeEsti
 // rotations: per view, -1 = place by colour.
 // Out: ok, legal, coverage, minPosterior, minConfidence, cost, ms, rotations (views), state (54 colour indices, -1
 // none), probability (54 × 6), confidence (54), observed (54), model mean (24), model var (24).
+// groups: per view its reliability group (EstimateOptions::reliability: views of a group stand or fall together), or
+// null (each view its own).
 JNIEXPORT jdoubleArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeEstimate (JNIEnv* env, jclass, jdoubleArray samples, jintArray counts,
-	jintArray rotations, jboolean legal, jboolean partial, jboolean reliability) {
+	jintArray rotations, jintArray groups, jboolean legal, jboolean partial, jboolean reliability) {
 	auto t0 = std::chrono::steady_clock::now();
 	const jsize views = env->GetArrayLength(counts);
 	jdouble* s = env->GetDoubleArrayElements(samples, nullptr);
 	jint* c = env->GetIntArrayElements(counts, nullptr);
 	jint* r = env->GetIntArrayElements(rotations, nullptr);
+	jint* gr = groups ? env->GetIntArrayElements(groups, nullptr) : nullptr;
 	Evidence evidence;
 	std::vector<int> ids;
 	const double* p = s;
 	for (int v = 0; v < views; v++) {
-		ids.push_back(evidence.addView(readSamples(p, c[v]), r[v]));
+		ids.push_back(evidence.addView(readSamples(p, c[v]), r[v], 1.0, gr ? gr[v] : -1));
 		p += 5 * c[v];
 	}
+	if (gr)
+		env->ReleaseIntArrayElements(groups, gr, JNI_ABORT);
 	env->ReleaseDoubleArrayElements(samples, s, JNI_ABORT);
 	env->ReleaseIntArrayElements(counts, c, JNI_ABORT);
 	env->ReleaseIntArrayElements(rotations, r, JNI_ABORT);

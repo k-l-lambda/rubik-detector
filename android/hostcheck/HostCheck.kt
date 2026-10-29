@@ -110,6 +110,8 @@ fun main(args: Array<String>) {
 			}
 		}
 		if (s.stage != stage) {
+			if (s.stage == Stage.FOLLOW && System.getenv("PURITY") != null)
+				s.follow?.let { println("        locked: " + purity(pipeline, it.state)) }
 			println(String.format("%6.2f s  frame %4d  stage %s", free, i + 1, s.stage))
 			stage = s.stage
 		}
@@ -138,6 +140,8 @@ fun main(args: Array<String>) {
 			(if (e != null) String.format(", estimate legal %b, min confidence %.2f, stable %d", e.legal, e.minConfidence, ls.stable) else ""))
 		if (e?.state != null && e.legal)
 			println("     state ${e.state}")
+		if (e?.state != null && e.legal && System.getenv("PURITY") != null)
+			println("     " + purity(pipeline, e.state))
 		if (e != null && e.ok) {
 			val obs = pipeline.observations()
 			for (k in 0 until 54)
