@@ -59,6 +59,7 @@ struct Solve {
 	PoseFit fit;
 	Segments segs;
 	int familySegments = 0;
+	int axisTrials = 0;                 // axis triples fitted (DetectOptions::axisHypotheses)
 	double msAxes = 0, msPosition = 0;
 	// share of all segment weight the lattice explains: Σ_family w·(1 - cost_i) / Σ_all w. Comparable across cameras,
 	// unlike the lattice cost, which averages over the family segments only: a wrong focal length assigns fewer
@@ -74,6 +75,72 @@ Solve solveFor (const Segments& base, const Intrinsics& K, int W, int H, const D
 	auto t0 = std::chrono::steady_clock::now();
 	M3 R;
 	V3 t{0, 0, 0};
+	if (options.search == Search::Wide && options.axisHypotheses > 1) {
+		// several axis triples: a backdrop of rectangles (papers, a keyboard, planks, shelves) can outweigh the cube's
+		// lines, and its axes win the RANSAC; each triple is fitted, the most present kept (stopping once one is clearly)
+		std::vector<M3> candidates = cubeAxesCandidates(segs, options.seed, options.axisHypotheses);
+		if (candidates.empty()) {
+			out.error = "no cube axes";
+			return out;
+		}
+		const Segments plain = segs;
+		FramingPrior framing{options.minExtent, options.maxExtent, options.centreShare, options.coarseSegments, options.shiftPairs, options.starts, options.joint};
+		double bestPresence = -1e9, msFit = 0;
+		std::vector<M3> refined;
+		for (const M3& D0 : candidates) {
+			Segments trial = plain;
+			M3 D = D0;
+			refineAxes(trial, D);
+			bool seen = false;
+			for (const M3& E : refined)
+				seen = seen || sameFrame(D, E, 3);
+			if (seen)
+				continue;
+			refined.push_back(D);
+			double cu = 0, cv = 0, ws = 0;
+			int families = 0;
+			for (size_t i = 0; i < trial.s.size(); i++)
+				if (trial.family[i] >= 0) {
+					cu += trial.w[i] * (trial.s[i][0] + trial.s[i][2]) / 2;
+					cv += trial.w[i] * (trial.s[i][1] + trial.s[i][3]) / 2;
+					ws += trial.w[i];
+					families++;
+				}
+			if (ws <= 0 || families < 6)
+				continue;
+			M3 Rc = signAxes(D, K, cu / ws, cv / ws, trial);
+			auto tf = std::chrono::steady_clock::now();
+			PoseFit fit = positionWide(K, Rc, trial, W, H, framing, starts, joint);
+			msFit += ms(tf);
+			double presence = presenceOf(K, fit.R, fit.t, fit.cost, latticeInput(K, trial), std::max(W, H), options.minExtent, options.maxExtent);
+			out.axisTrials++;
+			if (presence > bestPresence) {
+				bestPresence = presence;
+				out.fit = fit;
+				out.segs = trial;
+			}
+			if (presence >= options.axisGoodPresence)
+				break;
+		}
+		if (bestPresence < -1e8) {
+			out.error = "too few segments along the cube axes";
+			return out;
+		}
+		Segments& kept = out.segs;
+		for (int f : kept.family)
+			out.familySegments += f >= 0;
+		out.msPosition = msFit;
+		out.msAxes = ms(t0) - msFit;
+		double all = 0, fam = 0;
+		for (size_t i = 0; i < kept.w.size(); i++) {
+			all += kept.w[i];
+			if (kept.family[i] >= 0)
+				fam += kept.w[i];
+		}
+		out.support = all > 0 ? (1 - out.fit.cost) * fam / all : 0;
+		out.ok = true;
+		return out;
+	}
 	if (options.search == Search::Wide) {
 		M3 D;
 		if (!cubeAxes(segs, options.seed, D)) {
@@ -342,6 +409,7 @@ FocalEstimate Detector::estimateFocal (const std::vector<Image>& images, const C
 	const Image& first = images[0];
 	const double L = std::max(first.width, first.height);
 	DetectOptions solveOptions;
+	solveOptions.axisHypotheses = 1;   // the focal scan ranks focal lengths by one fit each
 	solveOptions.seed = options.seed;
 	solveOptions.minExtent = options.minExtent;
 	solveOptions.maxExtent = options.maxExtent;

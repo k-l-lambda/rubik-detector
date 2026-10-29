@@ -97,6 +97,12 @@ struct DetectOptions {
 	// each side (0: the whole frame; a crop over 80 % of the frame is not made). On a real video 0.3 took a local
 	// detection from 219 to 134 ms (the crop 58 % of the pixels), same cost and pose.
 	double roiMargin = 0.3;
+	// Search::Wide: the RANSAC's best distinct cube-axes triples tried (1: only the best), each fitted, the one with the
+	// highest presence kept; stops at the first with presence ≥ axisGoodPresence (the usual case: one fit). A desk of
+	// rectangles (papers, keyboards, planks, shelves) can win the RANSAC: on the realism renders 8 located 7 of 13 views
+	// the best triple had put on the desk (4: 4, 16: 8)
+	int axisHypotheses = 8;
+	double axisGoodPresence = 0.6;
 };
 
 struct ViewResult {

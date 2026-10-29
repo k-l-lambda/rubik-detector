@@ -79,6 +79,11 @@ Segments detectSegments (const Gray8& gray, const LabImage& lab, const Gray8 pla
 void planeNormals (const Intrinsics& K, Segments& segs);
 // three orthogonal directions (rows of D) and families, RANSAC (as geometry.axes)
 bool cubeAxes (Segments& segs, uint64_t seed, M3& D);
+// the RANSAC's best `count` distinct axis triples (rows; distinct: some axis more than `minDeg` off all of the other's),
+// best first, not refined
+std::vector<M3> cubeAxesCandidates (const Segments& segs, uint64_t seed, int count, double minDeg = 10);
+// two axis triples (rows) the same frame up to the axes' order and signs, within `deg`
+bool sameFrame (const M3& D, const M3& E, double deg);
 // the families of the segments for given axes (rows of D), and the alternating refinement of the axes from them
 void refineAxes (Segments& segs, M3& D);
 // axes signed towards the camera (seen at image point `towards`), as LineGeometry: returns R (axes as columns)
@@ -91,6 +96,9 @@ struct LatticeInput {
 };
 
 LatticeInput latticeInput (const Intrinsics& K, const Segments& segs);
+// presence of a pose (ViewResult::presence): mean face line coverage of the best two faces − the lattice cost, 0 for an
+// implausible projected size (outside [0.75 · minExtent, maxExtent] of longSide, working pixels)
+double presenceOf (const Intrinsics& K, const M3& R, V3 t, double cost, const LatticeInput& in, double longSide, double minExtent, double maxExtent);
 // Per face of the pose (the face at +1.5 along cube axis b) the share of its 8 lattice lines (4 per direction) with a
 // segment fitting on them (segment cost < 0.25, as latticeCost)
 std::array<double, 3> faceCoverage (const M3& R, V3 t, const LatticeInput& in, double tol = 0.35);

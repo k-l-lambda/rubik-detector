@@ -36,6 +36,8 @@ void rk_default_options (rk_options* o) {
 	o->starts = d.starts;
 	o->joint = d.joint;
 	o->roi_margin = d.roiMargin;
+	o->axis_hypotheses = d.axisHypotheses;
+	o->axis_good_presence = d.axisGoodPresence;
 }
 
 double rk_pose_cost (rk_detector* d, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format,
@@ -74,6 +76,8 @@ void rk_detect (rk_detector* d, const uint8_t* data, int32_t width, int32_t heig
 	options.starts = o->starts;
 	options.joint = o->joint;
 	options.roiMargin = o->roi_margin;
+	options.axisHypotheses = o->axis_hypotheses;
+	options.axisGoodPresence = o->axis_good_presence;
 	try {
 		ViewResult r = d->detector.detect(image, camera, options);
 		out->ok = r.ok;
@@ -129,6 +133,8 @@ int32_t rk_detect_segments (rk_detector* d, const uint8_t* data, int32_t width, 
 	options.starts = o->starts;
 	options.joint = o->joint;
 	options.roiMargin = o->roi_margin;
+	options.axisHypotheses = o->axis_hypotheses;
+	options.axisGoodPresence = o->axis_good_presence;
 	options.keepSegments = true;
 	try {
 		ViewResult r = d->detector.detect(image, camera, options);

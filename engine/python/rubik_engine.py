@@ -16,7 +16,8 @@ class Options(ctypes.Structure):
 		("sample_size", ctypes.c_double), ("seed", ctypes.c_uint64),
 		("min_extent", ctypes.c_double), ("max_extent", ctypes.c_double), ("centre_share", ctypes.c_double),
 		("coarse_segments", ctypes.c_int32), ("shift_pairs", ctypes.c_int32),
-		("starts", ctypes.c_int32), ("joint", ctypes.c_int32), ("roi_margin", ctypes.c_double)]
+		("starts", ctypes.c_int32), ("joint", ctypes.c_int32), ("roi_margin", ctypes.c_double),
+		("axis_hypotheses", ctypes.c_int32), ("axis_good_presence", ctypes.c_double)]
 
 
 class View(ctypes.Structure):
@@ -115,7 +116,7 @@ class Detector:
 		o.work_width = work_width
 		o.seed = seed
 		for key, value in effort.items():
-			setattr(o, key, float(value) if key == "roi_margin" else int(value))
+			setattr(o, key, float(value) if key in ("roi_margin", "axis_good_presence") else int(value))
 		if prior is not None:
 			o.search = 1
 			o.prior[:] = list(np.asarray(prior[0], float).ravel()) + list(np.asarray(prior[1], float))
@@ -272,6 +273,23 @@ class Tracker:
 			"renaming": r.renaming, "tracked": r.tracked, "inliers": r.inliers, "reprojection": r.reprojection,
 			"ms": {"pyramid": r.ms_pyramid, "flow": r.ms_flow, "pose": r.ms_pose}, "points": np.array(r.points[:r.point_count]),
 			"turning": bool(r.turning), "turn_normal": np.array(r.turn_normal), "turn_score": r.turn_score, "turn_in": r.turn_in, "turn_out": r.turn_out}
+
+
+PRESENCE_THRESHOLD = 0.5
+
+
+def photo_estimate(views, threshold=PRESENCE_THRESHOLD):
+	"""The photo protocol's state from its detections: views whose presence is under the threshold (the fit is on
+	something else — a desk of rectangles, a hand — even if it is a fit) are left out before fusion; with two views left
+	(five faces) the state comes from the legal completion, with fewer none. Returns the estimate dict plus "used" (the
+	indices of the views fused) and "dropped"."""
+	used = [i for i, v in enumerate(views) if v["ok"] and v["presence"] >= threshold]
+	dropped = [i for i in range(len(views)) if i not in used]
+	if len(used) < 2:
+		return {"ok": False, "error": f"{len(used)} view(s) with a cube", "used": used, "dropped": dropped}
+	e = estimate([views[i] for i in used], require_all_faces=len(used) == len(views) == 3, partial=len(used) < 3)
+	e.update(used=used, dropped=dropped)
+	return e
 
 
 def apply_moves(state, moves):

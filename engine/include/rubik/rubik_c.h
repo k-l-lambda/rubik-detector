@@ -33,6 +33,8 @@ typedef struct {
 	double min_extent, max_extent, centre_share;
 	int32_t coarse_segments, shift_pairs, starts, joint;   // DetectOptions search effort
 	double roi_margin;       // DetectOptions::roiMargin
+	int32_t axis_hypotheses; // DetectOptions::axisHypotheses
+	double axis_good_presence;
 } rk_options;
 
 typedef struct {

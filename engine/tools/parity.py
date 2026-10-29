@@ -45,10 +45,9 @@ def job(args):
 			rec["geometry_error"] = pipeline.geometry_error(quads, view.quads)
 		out["views"].append(rec)
 		views.append(r)
-	if not all(v["ok"] for v in views):
-		out.update(wrong=None, error="a view failed")
-		return out
-	e = re.estimate(views)
+	# the photo protocol: views without a cube (presence) left out before fusion
+	e = re.photo_estimate(views)
+	out["dropped"] = e["dropped"]
 	if not e["ok"]:
 		out.update(wrong=None, error=e["error"])
 		return out

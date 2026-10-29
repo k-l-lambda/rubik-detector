@@ -212,9 +212,18 @@ void refineAxes (Segments& segs, M3& D) {
 }
 
 bool cubeAxes (Segments& segs, uint64_t seed, M3& D) {
+	std::vector<M3> c = cubeAxesCandidates(segs, seed, 1);
+	if (c.empty())
+		return false;
+	D = c[0];
+	refineAxes(segs, D);
+	return true;
+}
+
+std::vector<M3> cubeAxesCandidates (const Segments& segs, uint64_t seed, int count, double minDeg) {
 	const size_t n = segs.normals.size();
 	if (n < 6)
-		return false;
+		return {};
 	std::vector<double> cdf(n);
 	std::partial_sum(segs.w.begin(), segs.w.end(), cdf.begin());
 	const double total = cdf.back();
@@ -224,8 +233,7 @@ bool cubeAxes (Segments& segs, uint64_t seed, M3& D) {
 		return size_t(std::upper_bound(cdf.begin(), cdf.end(), uniform(rng)) - cdf.begin());
 	};
 	const int HYPOTHESES = 3000;
-	double bestScore = -1;
-	M3 best{};
+	std::vector<std::pair<double, M3>> scored;
 	for (int hyp = 0; hyp < HYPOTHESES; hyp++) {
 		size_t i = std::min(draw(), n - 1), j = std::min(draw(), n - 1), k = std::min(draw(), n - 1);
 		V3 d1 = cross(segs.normals[i], segs.normals[j]);
@@ -246,16 +254,51 @@ bool cubeAxes (Segments& segs, uint64_t seed, M3& D) {
 			}
 			score += m * segs.w[s];
 		}
-		if (score > bestScore) {
-			bestScore = score;
-			best = {d1.x, d1.y, d1.z, d2.x, d2.y, d2.z, d3.x, d3.y, d3.z};
-		}
+		scored.push_back({score, {d1.x, d1.y, d1.z, d2.x, d2.y, d2.z, d3.x, d3.y, d3.z}});
 	}
-	if (bestScore < 0)
-		return false;
-	D = best;
-	refineAxes(segs, D);
+	// best first (ties: the earlier hypothesis, as the single-best search kept), then distinct ones
+	std::stable_sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+	std::vector<M3> out;
+	for (const auto& [score, D] : scored) {
+		if (int(out.size()) >= count)
+			break;
+		bool same = false;
+		for (const M3& E : out)
+			same = same || sameFrame(D, E, minDeg);
+		if (!same)
+			out.push_back(D);
+	}
+	return out;
+}
+
+bool sameFrame (const M3& D, const M3& E, double deg) {
+	const double cosMin = std::cos(deg * PI / 180);
+	for (int a = 0; a < 3; a++) {
+		double m = 0;
+		for (int b = 0; b < 3; b++)
+			m = std::max(m, std::fabs(dot(row(D, a), row(E, b))));
+		if (m < cosMin)
+			return false;
+	}
 	return true;
+}
+
+double presenceOf (const Intrinsics& K, const M3& R, V3 t, double cost, const LatticeInput& in, double longSide, double minExtent, double maxExtent) {
+	std::array<double, 3> c = faceCoverage(R, t, in);
+	std::sort(c.begin(), c.end());
+	double u0 = 1e300, u1 = -1e300, v0 = 1e300, v1 = -1e300;
+	for (int corner = 0; corner < 8; corner++) {
+		V3 q = mul(R, V3{corner & 1 ? 1.5 : -1.5, corner & 2 ? 1.5 : -1.5, corner & 4 ? 1.5 : -1.5}) + t;
+		if (!(q.z > 0))
+			return 0;
+		double u = K.fx * q.x / q.z + K.cx, v = K.fy * q.y / q.z + K.cy;
+		u0 = std::min(u0, u);
+		u1 = std::max(u1, u);
+		v0 = std::min(v0, v);
+		v1 = std::max(v1, v);
+	}
+	double extent = std::max(u1 - u0, v1 - v0) / longSide;
+	return extent >= 0.75 * minExtent && extent <= maxExtent ? (c[1] + c[2]) / 2 - cost : 0.0;
 }
 
 M3 signAxes (const M3& Din, const Intrinsics& K, double u, double v, Segments& segs) {

@@ -22,12 +22,13 @@ def main():
 	views = L["views"]
 	pose = lambda i: (np.array(views[i]["rotation"]).reshape(3, 3), np.array(views[i]["translation"]))
 	tr = re.Tracker()
-	tr.seed(cv2.imread(f"{V}/frame0001.png"), K, *pose(0))
+	load = lambda i: cv2.imread(f"{V}/frame{i + 1:04d}.png") if os.path.exists(f"{V}/frame{i + 1:04d}.png") else cv2.imread(f"{V}/frame{i + 1:04d}.jpg")
+	tr.seed(load(0), K, *pose(0))
 	per_phase, per_twist = {}, {}
 	for i in range(1, len(views)):
-		r = tr.track(cv2.imread(f"{V}/frame{i + 1:04d}.png"))
+		r = tr.track(load(i))
 		if not r["ok"]:
-			tr.seed(cv2.imread(f"{V}/frame{i + 1:04d}.png"), K, *pose(i))
+			tr.seed(load(i), K, *pose(i))
 			continue
 		v = views[i]
 		ph = v["phase"]
