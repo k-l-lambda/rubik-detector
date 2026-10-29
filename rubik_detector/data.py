@@ -1,6 +1,10 @@
 """Labelled samples from ~/data/rubik-renderer (override with RUBIK_DATA).
 
-	samples/gNN/view{1,2,3}.png + labels.json     renders (klstudio /rubik-samples, seed = NN), 1024×768
+	samples/rNNN/view{1,2,3}.jpg + labels.json    renders with phone-photo realism (klstudio /rubik-samples ?realism=1, seed
+	                                              5000 + NNN): all colour schemes and builds, 1024×768, 768×1024, 1280×720 or
+	                                              720×1280, the cube small and off centre on a cluttered desk, defocus, shake,
+	                                              noise, white balance, JPEG
+	samples/gNN/view{1,2,3}.png + labels.json     clean renders (seed = NN), 1024×768 — kept only where they have edits
 	samples/nNN/…                                 the same with non-standard colour schemes (seed 1000 + NN)
 	samples/gNN/edit/view{v}-{bg,hand}.jpg + .json seedream edits of a render: natural background / a hand holding it;
 	                                              the .json has the checker's verdict and the sticker corners carried
@@ -42,7 +46,8 @@ class Scenario:
 
 
 def groups(prefix="g"):
-	"""Group names of one sample set: g = standard colour schemes (seed NN), n = non-standard ones (seed 1000 + NN)."""
+	"""Group names of one sample set: r = realism renders (seed 5000 + NNN); g / n / a = the clean renders kept for their
+	edits (standard / non-standard colour schemes, anti-pop)."""
 	return sorted(d for d in os.listdir(f"{ROOT}/samples") if d.startswith(prefix) and d[1:].isdigit())
 
 
@@ -62,6 +67,8 @@ def load(group, kind="render", width=1024, include_failed=False):
 		lv = labels["views"][v]
 		if kind == "render":
 			path, scale = f"{ROOT}/samples/{group}/view{v + 1}.png", 1.0
+			if not os.path.exists(path):
+				path = f"{ROOT}/samples/{group}/view{v + 1}.jpg"
 			stickers = [(s["index"], s["corners"]) for s in lv["stickers"] if s["visible"]]
 			occluded = set()
 		else:

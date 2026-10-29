@@ -58,7 +58,7 @@ def job(args):
 
 def main():
 	ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-	ap.add_argument("--set", default="g,n")
+	ap.add_argument("--set", default="r,g,n,a")
 	ap.add_argument("--kinds", default="render,bg,hand")
 	ap.add_argument("--reference", default="runs/v2-*-1028-1109")
 	ap.add_argument("--mode", default="working", choices=("working", "file"))
