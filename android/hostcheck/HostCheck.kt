@@ -32,6 +32,10 @@ fun main(args: Array<String>) {
 	var lostLongest = 0
 	var lostRun = 0
 	val modes = HashMap<String, Int>()
+	// per detection mode: count, total ms of the frame, of the first detection, of the wide retry, engine-internal ms
+	class Acc { var n = 0; var frame = 0.0; var rotate = 0.0; var first = 0.0; var retry = 0.0; var place = 0.0; var estimate = 0.0
+		var follow = 0.0; var snapshot = 0.0; var engineSeg = 0.0; var enginePos = 0.0; var engineAxes = 0.0; var engineTotal = 0.0 }
+	val acc = HashMap<String, Acc>()
 	var free = arrive(0)
 	var last = -1
 	var stage: Stage? = null
@@ -63,6 +67,22 @@ fun main(args: Array<String>) {
 		val frame = detector.setFrame(buffer, w, h, w * 4, 0)
 		val s = pipeline.process(detector, frame, i / fps)
 		val ms = (System.nanoTime() - t0) / 1e6
+		s.detection?.let { d ->
+			val a = acc.getOrPut(d.mode) { Acc() }
+			a.n++
+			a.frame += ms
+			a.rotate += frame.ms
+			a.first += s.steps.first
+			a.retry += s.steps.retry
+			a.place += s.steps.place
+			a.estimate += s.steps.estimate
+			a.follow += s.steps.follow
+			a.snapshot += s.steps.snapshot
+			a.engineSeg += d.timings[0]
+			a.engineAxes += d.timings[1]
+			a.enginePos += d.timings[2]
+			a.engineTotal += d.totalMs
+		}
 		free = start + ms * scale / 1000
 		last = i
 		processed++
@@ -122,6 +142,18 @@ fun main(args: Array<String>) {
 				}
 		}
 	}
+	println("time per processed frame by detection mode (ms; first = the first engine detect, retry = the wide one after a failed local):")
+	println(String.format("  %-9s %4s %7s %7s %7s %7s %7s %7s %7s %7s | last detect: segments %s position", "mode", "n", "frame", "rotate", "first", "retry", "place", "estim.", "follow", "snap", ""))
+	var all = Acc()
+	for ((mode, a) in acc.toSortedMap()) {
+		println(String.format("  %-9s %4d %7.0f %7.1f %7.0f %7.0f %7.1f %7.1f %7.1f %7.1f | %7.0f %7.0f", mode, a.n, a.frame / a.n, a.rotate / a.n, a.first / a.n,
+			a.retry / a.n, a.place / a.n, a.estimate / a.n, a.follow / a.n, a.snapshot / a.n, a.engineSeg / a.n, a.enginePos / a.n))
+		all.n += a.n; all.frame += a.frame; all.first += a.first; all.retry += a.retry; all.place += a.place; all.estimate += a.estimate
+		all.follow += a.follow; all.snapshot += a.snapshot; all.rotate += a.rotate
+	}
+	if (all.n > 0)
+		println(String.format("  %-9s %4d %7.0f %7.1f %7.0f %7.0f %7.1f %7.1f %7.1f %7.1f", "all", all.n, all.frame / all.n, all.rotate / all.n, all.first / all.n,
+			all.retry / all.n, all.place / all.n, all.estimate / all.n, all.follow / all.n, all.snapshot / all.n))
 	val tracked = modes.values.sum()
 	println(String.format("HUD: good fit on %d/%d processed frames (%.0f%%); %d lost spells, longest %d frames; modes %s",
 		goodFrames, tracked, 100.0 * goodFrames / maxOf(1, tracked), lostRuns, lostLongest, modes))

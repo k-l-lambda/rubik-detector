@@ -248,6 +248,8 @@ fun CubeNet(net: Net, modifier: Modifier) {
 // everything the pipeline knows about the last frame, as text (the debug panel and the dump files)
 fun describe(s: Snapshot, st: Stats): String = buildString {
 	appendLine(String.format("stage %s   t %.2f s   process %.0f ms (pipeline %.0f, rotate %.1f)", s.stage, s.time, st.totalMs, s.processMs, st.convertMs))
+	appendLine(String.format("  steps ms: detect %.0f + wide retry %.0f, place %.1f, estimate %.1f, follow %.1f, snapshot %.1f",
+		s.steps.first, s.steps.retry, s.steps.place, s.steps.estimate, s.steps.follow, s.steps.snapshot))
 	appendLine(String.format("frame %dx%d upright (analysis %dx%d, rot %d°)   %.1f fps processed, every %.1f camera frames, age %.0f ms",
 		s.frame.width, s.frame.height, st.analysisSize.width, st.analysisSize.height, st.rotation, st.processedFps, st.cameraFramesPerProcessed, st.ageMs))
 	val f = s.focal

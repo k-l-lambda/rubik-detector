@@ -60,6 +60,19 @@ class Net(val known: BooleanArray, val colour: IntArray, val probability: Double
 	}
 }
 
+// Where one frame's processing time went (ms): engine detections (first try / wide retry after a failed local fit),
+// evidence placement (fusion by colour), state estimate, follow scoring, snapshot building (net, coverage).
+class StepTimes(
+	val first: Double = 0.0,
+	val retry: Double = 0.0,
+	val place: Double = 0.0,
+	val estimate: Double = 0.0,
+	val follow: Double = 0.0,
+	val snapshot: Double = 0.0,
+) {
+	val total get() = first + retry + place + estimate + follow + snapshot
+}
+
 // What one processed frame leaves for the UI (immutable).
 class Snapshot(
 	val stage: Stage,
@@ -79,6 +92,7 @@ class Snapshot(
 	val net: Net,
 	val processMs: Double,
 	val events: List<String>,
+	val steps: StepTimes,
 )
 
 class Pipeline(val settings: Settings = Settings()) {
@@ -97,6 +111,19 @@ class Pipeline(val settings: Settings = Settings()) {
 	private val stable = ArrayList<String>()
 	private var follower: Follower? = null
 	private val events = ArrayList<String>()
+	// this frame's step times (ms), reset per frame
+	private var tFirst = 0.0
+	private var tRetry = 0.0
+	private var tPlace = 0.0
+	private var tEstimate = 0.0
+	private var tFollow = 0.0
+
+	private inline fun <T> timed(add: (Double) -> Unit, block: () -> T): T {
+		val t0 = System.nanoTime()
+		val r = block()
+		add((System.nanoTime() - t0) / 1e6)
+		return r
+	}
 
 	// a known focal length (camera intrinsics) instead of estimating it
 	fun useFocal(fx: Double) {
@@ -133,6 +160,11 @@ class Pipeline(val settings: Settings = Settings()) {
 	// One camera frame, already set upright on the detector. time: capture time in seconds.
 	fun process(detector: Detector, frame: FrameInfo, time: Double): Snapshot {
 		val started = System.nanoTime()
+		tFirst = 0.0
+		tRetry = 0.0
+		tPlace = 0.0
+		tEstimate = 0.0
+		tFollow = 0.0
 		if (stage == Stage.FOCAL) {
 			val f = detector.estimateFocal(frame)
 			focal = f
@@ -148,10 +180,10 @@ class Pipeline(val settings: Settings = Settings()) {
 		val (r, link) = track(detector, frame, time)
 		val good = r.ok && r.latticeCost <= settings.fallbackCost
 		when (stage) {
-			Stage.ACQUIRE -> acquire(time)
+			Stage.ACQUIRE -> timed({ tEstimate += it }) { acquire(time) }
 			Stage.FOLLOW -> if (good && fitsWell(r)) {
 				val f = follower!!
-				val decision = f.step(r)
+				val decision = timed({ tFollow += it }) { f.step(r) }
 				if (decision == "switch")
 					event("turned ${f.moves.last()} → followed", time)
 				if (f.misses >= settings.globalAfter) {
@@ -167,10 +199,15 @@ class Pipeline(val settings: Settings = Settings()) {
 	}
 
 	private fun snapshot(time: Double, frame: FrameInfo, r: Detection?, good: Boolean, link: LinkInfo?, started: Long): Snapshot {
+		val snapStarted = System.nanoTime()
 		val covered = frames.indices.flatMap { v -> frames[v].samples.filter { it.valid }.map { Cube.perms[rotations[v]][it.facelet] } }.toSet().size
 		val follow = follower?.info()
-		return Snapshot(stage, time, frame, fx, focal, r, good, link, frames.size, frames.map { it.chain }.toSet().size, covered, estimate,
-			stable.size, follow, net(follow), (System.nanoTime() - started) / 1e6, events.toList())
+		val chainCount = frames.map { it.chain }.toSet().size
+		val net = net(follow)
+		val evs = events.toList()
+		val steps = StepTimes(tFirst, tRetry, tPlace, tEstimate, tFollow, (System.nanoTime() - snapStarted) / 1e6)
+		return Snapshot(stage, time, frame, fx, focal, r, good, link, frames.size, chainCount, covered, estimate,
+			stable.size, follow, net, (System.nanoTime() - started) / 1e6, evs, steps)
 	}
 
 	private fun net(follow: FollowInfo?): Net {
@@ -233,11 +270,11 @@ class Pipeline(val settings: Settings = Settings()) {
 		var r: Detection? = null
 		val prior = predict(time)
 		if (prior != null) {
-			r = detector.detect(frame, fx, prior, settings.workWidth, settings.keepSegments)
+			r = timed({ tFirst += it }) { detector.detect(frame, fx, prior, settings.workWidth, settings.keepSegments) }
 			mode = "local"
 		}
 		if (r == null || !r.ok || r.latticeCost > settings.fallbackCost) {
-			r = detector.detect(frame, fx, null, settings.workWidth, settings.keepSegments)
+			r = timed({ if (prior != null) tRetry += it else tFirst += it }) { detector.detect(frame, fx, null, settings.workWidth, settings.keepSegments) }
 			mode = if (mode == "local") "fallback" else "wide"
 		}
 		r.mode = mode
@@ -290,7 +327,7 @@ class Pipeline(val settings: Settings = Settings()) {
 		else {
 			pending.add(r)
 			val anchor = pending[0]
-			val placed = place(anchor)
+			val placed = timed({ tPlace += it }) { place(anchor) }
 			if (placed != null) {
 				val start = Cube.chainStart(placed, anchor.rel)
 				for (v in pending) {
