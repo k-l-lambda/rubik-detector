@@ -101,7 +101,7 @@ object MiniCube {
 					cubies.add(Cubie(pos, place(doubleArrayOf(x.toDouble(), y.toDouble(), z.toDouble()), pos)[2]))
 				}
 		val out = ArrayList<MiniPoly>()
-		val half = 0.47
+		val half = 0.495   // the cubie (a hairline between cubies)
 		for (c in cubies.sortedByDescending { it.depth }) {
 			val centre = c.pos.map { it.toDouble() }
 			for (a in 0 until 3)
@@ -126,7 +126,7 @@ object MiniCube {
 					// the sticker on an outer face
 					if (c.pos[a] == s) {
 						val k = (0 until 54).first { j -> cubie[j].contentEquals(c.pos) && Math.round(normal[j][a]).toInt() == s }
-						out.add(MiniPoly(quad(half * 0.82), view.colours[k], true))
+						out.add(MiniPoly(quad(half * 0.93), view.colours[k], true))   // the sticker: a thin dark rim
 					}
 				}
 		}

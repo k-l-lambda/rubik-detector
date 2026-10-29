@@ -102,6 +102,7 @@ fun main(args: Array<String>) {
 	System.getenv("HINT")?.let { ts.hints = it != "0" }
 	val coord = Coordinator(ts)
 	System.getenv("WORK_WIDTH")?.toIntOrNull()?.let { coord.pipeline.settings.workWidth = it }
+	System.getenv("MAX_EVIDENCE")?.toIntOrNull()?.let { coord.pipeline.settings.maxEvidence = it }
 	fxGiven?.let { coord.pipeline.useFocal(it) }
 	val detector = Detector()
 	var buffer: ByteBuffer? = null
@@ -244,8 +245,8 @@ fun main(args: Array<String>) {
 					g.color = Color((c shr 16) and 0xff, (c shr 8) and 0xff, c and 0xff)
 					g.fillPolygon(xs, ys, 4)
 					if (poly.outline) {
-						g.color = Color(0, 0, 0)
-						g.stroke = BasicStroke(1f)
+						g.color = Color(0, 0, 0, 150)
+						g.stroke = BasicStroke(0.5f)
 						g.drawPolygon(xs, ys, 4)
 					}
 				}
@@ -285,6 +286,26 @@ fun main(args: Array<String>) {
 	for ((ph, e) in byPhase.toSortedMap())
 		println(String.format("  displayed during %-8s: error median %.3f p90 %.3f (%d)", ph, pct(e, 0.5), pct(e, 0.9), e.size))
 	println("  stats: " + coord.stats.toSortedMap())
+	// the follower's timeline: stage changes, switches, decisions (one line per second while following)
+	if (System.getenv("TIMELINE") != null) {
+		var stage: Any? = null
+		var moves = 0
+		var lastSecond = -1
+		for ((ready, k, s) in detections) {
+			val f = s.follow
+			if (s.stage != stage) {
+				println(String.format("  %6.2f s  frame %4d  stage %s", ready, k + 1, s.stage))
+				stage = s.stage
+			}
+			if (f != null && f.moves.size > moves)
+				println(String.format("  %6.2f s  frame %4d  turned %s (%s)", ready, k + 1, f.moves.last(), f.decision))
+			if (f != null && ready.toInt() != lastSecond) {
+				lastSecond = ready.toInt()
+				println(String.format("  %6.2f s  frame %4d    %s; conflicts best %d, state %d", ready, k + 1, f.decision, f.conflicts, f.stateConflicts))
+			}
+			moves = f?.moves?.size ?: 0
+		}
+	}
 	// the follower against the true twists (a render's labels): delay from the twist's end to the switch, right or not
 	if (labelFile.exists()) {
 		val text = labelFile.readText()

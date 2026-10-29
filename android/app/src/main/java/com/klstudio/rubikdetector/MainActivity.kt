@@ -198,7 +198,7 @@ fun DrawScope.drawMini(view: MiniView) {
 		}
 		drawPath(path, Color(poly.argb))
 		if (poly.outline)
-			drawPath(path, Color.Black, style = Stroke(width = 1f))
+			drawPath(path, Color.Black.copy(alpha = 0.6f), style = Stroke(width = 0.5f))
 	}
 }
 
