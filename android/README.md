@@ -28,6 +28,15 @@ latency timeline of the Python tools (needs g++, a JDK's `jni.h` via `JNI_INCLUD
 Gradle cache). On v103 (8 turns): locks exact at ~12 s, all 8 turns followed with the state equal to the labels, at
 1× and 2× latency — the same as `follow_tracker.py`.
 
+## Cube presence
+
+Every frame is first asked whether there is a cube at all: the engine's presence score of the detection (line
+coverage of the best two faces − lattice cost) must reach 0.5. Below it nothing is evidence, followed or drawn (the
+headline says "no cube", only the debug segments show), and no focal estimate is made: before the focal length is
+known, the check runs with fx = 1.0 × long side. Host check: 5 generated scenes without a cube shown for a second each
+— no frame present, the focal stage never left; the real video — 71/98 processed frames present; v103 — unchanged
+(locks at 11.9 s, all 8 turns followed).
+
 ## Screen
 
 - Preview with the latest detection: sampled sticker quads in their measured colours (white outline; red when the

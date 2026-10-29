@@ -19,7 +19,10 @@ fun main(args: Array<String>) {
 	val labels = if (labelFile.exists()) labelFile.readText() else null
 	val fps = labels?.let { Regex("\"fps\":\\s*([0-9.]+)").find(it)!!.groupValues[1].toDouble() } ?: (args.getOrNull(2)?.toDouble() ?: 30.0)
 	val facelets = labels?.let { l -> Regex("\"facelets\":\\s*\"([LRDUBF]{54})\"").findAll(l).map { it.groupValues[1] }.toList() } ?: emptyList()
-	val frames = dir.listFiles { f -> f.name.matches(Regex("frame\\d{4}\\.png")) }!!.sortedBy { it.name }
+	// frame0001.png … (a video), or any PNGs (e.g. the negatives: each shown for a second)
+	val pngs = dir.listFiles { f -> f.name.endsWith(".png") }!!.sortedBy { it.name }
+	val videoFrames = pngs.filter { it.name.matches(Regex("frame\\d{4}\\.png")) }
+	val frames = if (videoFrames.isNotEmpty()) videoFrames else pngs.flatMap { f -> List(30) { f } }
 	val n = frames.size
 	val truth = { i: Int -> facelets.getOrNull(1 + i) }   // cube.facelets first, then one per frame
 	val arrive = { i: Int -> i / fps + 0.03 }
@@ -32,6 +35,8 @@ fun main(args: Array<String>) {
 	var lostLongest = 0
 	var lostRun = 0
 	val modes = HashMap<String, Int>()
+	var presentFrames = 0
+	var shownFrames = 0
 	// per detection mode: count, total ms of the frame, of the first detection, of the wide retry, engine-internal ms
 	class Acc { var n = 0; var frame = 0.0; var rotate = 0.0; var first = 0.0; var retry = 0.0; var place = 0.0; var estimate = 0.0
 		var follow = 0.0; var snapshot = 0.0; var engineSeg = 0.0; var enginePos = 0.0; var engineAxes = 0.0; var engineTotal = 0.0 }
@@ -87,6 +92,10 @@ fun main(args: Array<String>) {
 		last = i
 		processed++
 		lastSnapshot = s
+		if (s.present)
+			presentFrames++
+		if (s.present && s.good)
+			shownFrames++
 		if (s.detection != null && s.stage != Stage.FOCAL) {
 			modes.merge(s.detection!!.mode, 1, Int::plus)
 			if (s.good) {
@@ -155,6 +164,8 @@ fun main(args: Array<String>) {
 		println(String.format("  %-9s %4d %7.0f %7.1f %7.0f %7.0f %7.1f %7.1f %7.1f %7.1f", "all", all.n, all.frame / all.n, all.rotate / all.n, all.first / all.n,
 			all.retry / all.n, all.place / all.n, all.estimate / all.n, all.follow / all.n, all.snapshot / all.n))
 	val tracked = modes.values.sum()
+	println(String.format("presence ≥ threshold on %d/%d processed frames; HUD stickers drawn on %d; stage at the end %s",
+		presentFrames, processed, shownFrames, lastSnapshot?.stage))
 	println(String.format("HUD: good fit on %d/%d processed frames (%.0f%%); %d lost spells, longest %d frames; modes %s",
 		goodFrames, tracked, 100.0 * goodFrames / maxOf(1, tracked), lostRuns, lostLongest, modes))
 	detector.close()

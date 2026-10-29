@@ -106,7 +106,7 @@ JNIEXPORT jdoubleArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeSetF
 // Detection on the kept frame. prior: R (9) t (3) for a local search, or null for wide.
 // Out: ok, latticeCost, support, segmentCount, familySegments, R(9), t(3), timings(4: segments axes position
 // sampling), totalMs, sampleCount, per sample (facelet, valid, L, a, b, quad 8) = 13, segmentCount2, per segment
-// (x1, y1, x2, y2, weight, family) = 6.
+// (x1, y1, x2, y2, weight, family) = 6, presence, faceCoverage (3).
 JNIEXPORT jdoubleArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeDetect (JNIEnv* env, jclass, jlong h, jint width, jint height,
 	jdouble fx, jdouble fy, jdouble cx, jdouble cy, jdoubleArray prior, jint workWidth, jboolean keepSegments) {
 	Handle* H = handle(h);
@@ -138,9 +138,11 @@ JNIEXPORT jdoubleArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeDete
 		out.push_back(double(r.segments.size()));
 		for (const Segment& s : r.segments)
 			out.insert(out.end(), {s.x1, s.y1, s.x2, s.y2, s.weight, double(s.family)});
+		out.push_back(r.presence);
+		out.insert(out.end(), r.faceCoverage.begin(), r.faceCoverage.end());
 	}
 	catch (const std::exception&) {
-		out.assign(5 + 12 + 5 + 2, 0.0);
+		out.assign(5 + 12 + 5 + 2 + 4, 0.0);
 		out[1] = 1;
 	}
 	return toArray(env, out);

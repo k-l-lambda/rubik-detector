@@ -71,6 +71,9 @@ struct LatticeInput {
 };
 
 LatticeInput latticeInput (const Intrinsics& K, const Segments& segs);
+// Per face of the pose (the face at +1.5 along cube axis b) the share of its 8 lattice lines (4 per direction) with a
+// segment fitting on them (segment cost < 0.25, as latticeCost)
+std::array<double, 3> faceCoverage (const M3& R, V3 t, const LatticeInput& in, double tol = 0.35);
 double latticeCost (const M3& R, V3 t, const LatticeInput& in, double tol = 0.35, double outside = 1.0);
 
 struct PoseFit {

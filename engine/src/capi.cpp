@@ -90,6 +90,8 @@ void rk_detect (rk_detector* d, const uint8_t* data, int32_t width, int32_t heig
 		out->ms_axes = r.timings.axes;
 		out->ms_position = r.timings.position;
 		out->ms_sampling = r.timings.sampling;
+		out->presence = r.presence;
+		std::copy(r.faceCoverage.begin(), r.faceCoverage.end(), out->face_coverage);
 		out->sample_count = int32_t(std::min<size_t>(r.samples.size(), 27));
 		for (int i = 0; i < out->sample_count; i++) {
 			const FaceletSample& s = r.samples[i];
@@ -142,6 +144,8 @@ int32_t rk_detect_segments (rk_detector* d, const uint8_t* data, int32_t width, 
 		out->ms_axes = r.timings.axes;
 		out->ms_position = r.timings.position;
 		out->ms_sampling = r.timings.sampling;
+		out->presence = r.presence;
+		std::copy(r.faceCoverage.begin(), r.faceCoverage.end(), out->face_coverage);
 		for (const Segment& g : r.segments) {
 			if (written >= capacity)
 				break;

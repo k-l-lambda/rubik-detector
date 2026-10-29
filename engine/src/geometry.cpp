@@ -326,6 +326,54 @@ double latticeCost (const M3& R, V3 t, const LatticeInput& in, double tol, doubl
 	return total / wsum;
 }
 
+std::array<double, 3> faceCoverage (const M3& R, V3 t, const LatticeInput& in, double tol) {
+	V3 tc = mulT(R, t);
+	bool hit[3][3][4] = {};   // face b, line direction a, line index
+	for (size_t i = 0; i < in.fam.size(); i++) {
+		const int a = in.fam[i];
+		const V3 q1 = mulT(R, in.rays1[i]), q2 = mulT(R, in.rays2[i]);
+		double best = 1.0;
+		int bestFace = -1, bestLine = 0;
+		for (int b = 0; b < 3; b++) {
+			if (b == a)
+				continue;
+			const int c = 3 - a - b;
+			auto at = [&](const V3& q, double& s, double& pa, double& pc) {
+				double den = q[b];
+				den = std::fabs(den) < 1e-9 ? 1e-9 : den;
+				s = (1.5 + tc[b]) / den;
+				pa = s * q[a] - tc[a];
+				pc = s * q[c] - tc[c];
+			};
+			double s1, pa1, pc1, s2, pa2, pc2;
+			at(q1, s1, pa1, pc1);
+			at(q2, s2, pa2, pc2);
+			double pc = (pc1 + pc2) / 2;
+			bool inside = s1 > 0 && s2 > 0 && std::fabs(pc) <= 1.6 && std::min(pa1, pa2) >= -1.65 && std::max(pa1, pa2) <= 1.65;
+			double phase = std::fabs(modPositive(pc, 1.0) - 0.5);
+			double r = std::min(phase / tol, 1.0);
+			double cst = inside ? r * r : 1.0;
+			if (cst < best) {
+				best = cst;
+				bestFace = b;
+				bestLine = std::min(3, std::max(0, int(std::floor(pc + 2.0))));
+			}
+		}
+		if (bestFace >= 0 && best < 0.25)
+			hit[bestFace][a][bestLine] = true;
+	}
+	std::array<double, 3> out{};
+	for (int b = 0; b < 3; b++) {
+		int n = 0;
+		for (int a = 0; a < 3; a++)
+			if (a != b)
+				for (int k = 0; k < 4; k++)
+					n += hit[b][a][k];
+		out[b] = n / 8.0;
+	}
+	return out;
+}
+
 namespace {
 
 struct PoseSearch {

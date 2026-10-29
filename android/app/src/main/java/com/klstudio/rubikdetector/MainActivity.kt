@@ -136,11 +136,12 @@ fun headline(s: Snapshot): String {
 	val d = s.detection
 	val det = when {
 		d == null -> ""
-		s.good -> String.format("%s %.3f", d.mode, d.latticeCost)
+		!s.present -> String.format("no cube (presence %.2f)", s.presence)
+		s.good -> String.format("%s %.3f  presence %.2f", d.mode, d.latticeCost, s.presence)
 		else -> String.format("lost (%.2f)", d.latticeCost)
 	}
 	return when (s.stage) {
-		Stage.FOCAL -> "estimating focal length…"
+		Stage.FOCAL -> if (s.present) "estimating focal length…" else "looking for a cube…\n$det"
 		Stage.ACQUIRE -> String.format("ACQUIRE %d/54 %s\n%s", s.covered, s.estimate?.takeIf { it.legal }?.let { String.format("conf %.2f", it.minConfidence) } ?: "", det)
 		Stage.FOLLOW -> "FOLLOW ${s.follow?.moves?.size ?: 0} turns\n$det"
 	}
@@ -165,7 +166,8 @@ fun DrawScope.drawDetection(s: Snapshot, segments: Boolean, samples: Boolean, ax
 		for (g in d.segments)
 			drawLine(if (g.family in 0..2) FAMILY[g.family] else Color(0x80a0a0a0), m.map(g.x1, g.y1), m.map(g.x2, g.y2),
 				strokeWidth = if (g.family >= 0) 2f else 1f)
-	if (!d.ok)
+	// nothing of a detection without a cube (only the debug segments above)
+	if (!d.ok || !s.present)
 		return
 	val outline = if (s.good) Color.White else Color(0xffff5050)
 	if (samples)
@@ -265,6 +267,8 @@ fun describe(s: Snapshot, st: Stats): String = buildString {
 		appendLine(String.format("  ms: segments %.0f  axes %.0f  position %.0f  sampling %.0f  total %.0f",
 			d.timings[0], d.timings[1], d.timings[2], d.timings[3], d.totalMs))
 		appendLine(String.format("  pose t (%.2f, %.2f, %.2f) cubies, %d/%d samples valid", d.t[0], d.t[1], d.t[2], d.samples.count { it.valid }, d.samples.size))
+		appendLine(String.format("  presence %.2f (%s; face line coverage %.2f %.2f %.2f)", d.presence, if (s.present) "cube" else "no cube",
+			d.faceCoverage[0], d.faceCoverage[1], d.faceCoverage[2]))
 	}
 	s.link?.let { appendLine(String.format("  link to previous: %.1f° (renamed), colour ΔE %.1f → %s", it.angle, it.colour, if (it.linked) "linked" else "new chain")) }
 	appendLine(String.format("evidence %d frames in %d chains, %d/54 facelets observed", s.evidenceFrames, s.chains, s.covered))

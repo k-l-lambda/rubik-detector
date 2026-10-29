@@ -211,6 +211,31 @@ ViewResult Detector::detect (const Image& image, const Camera& camera, const Det
 	std::copy(fit.R.begin(), fit.R.end(), out.pose.R.begin());
 	out.pose.t = {fit.t.x, fit.t.y, fit.t.z};
 	out.latticeCost = fit.cost;
+	{
+		LatticeInput in = latticeInput(K, best.segs);
+		out.faceCoverage = faceCoverage(fit.R, fit.t, in);
+		std::array<double, 3> c = out.faceCoverage;
+		std::sort(c.begin(), c.end());
+		// projected size of the cube outline, as a share of the working image's long side
+		double u0 = 1e300, u1 = -1e300, v0 = 1e300, v1 = -1e300;
+		bool front = true;
+		for (int corner = 0; corner < 8; corner++) {
+			V3 p{corner & 1 ? 1.5 : -1.5, corner & 2 ? 1.5 : -1.5, corner & 4 ? 1.5 : -1.5};
+			V3 q = mul(fit.R, p) + fit.t;
+			if (!(q.z > 0)) {
+				front = false;
+				break;
+			}
+			double u = K.fx * q.x / q.z + K.cx, v = K.fy * q.y / q.z + K.cy;
+			u0 = std::min(u0, u);
+			u1 = std::max(u1, u);
+			v0 = std::min(v0, v);
+			v1 = std::max(v1, v);
+		}
+		double extent = front ? std::max(u1 - u0, v1 - v0) / std::max(p.W, p.H) : 1e9;
+		bool plausible = extent >= 0.75 * options.minExtent && extent <= options.maxExtent;
+		out.presence = plausible ? (c[1] + c[2]) / 2 - fit.cost : 0.0;
+	}
 	if (options.keepSegments)
 		for (size_t i = 0; i < best.segs.s.size(); i++)
 			out.segments.push_back({float(best.segs.s[i][0] / p.s), float(best.segs.s[i][1] / p.s), float(best.segs.s[i][2] / p.s),

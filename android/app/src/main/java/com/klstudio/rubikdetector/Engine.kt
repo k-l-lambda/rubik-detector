@@ -21,6 +21,8 @@ class Detection(
 	val totalMs: Double,
 	val samples: List<Sample>,
 	val segments: List<Segment>,
+	val presence: Double,           // is there a cube at all (engine ViewResult::presence; PRESENCE_THRESHOLD)
+	val faceCoverage: DoubleArray,  // per cube axis, share of its face's 8 lattice lines with a fitting segment
 ) {
 	var mode = "wide"
 	var time = 0.0                  // capture time, seconds
@@ -146,7 +148,9 @@ class Detector : AutoCloseable {
 			i += 6
 			s
 		}
-		return Detection(o[0] != 0.0, o[1], o[2], o[3].toInt(), o[4].toInt(), R, t, timings, total, samples, segments)
+		val presence = o[i++]
+		val coverage = DoubleArray(3) { o[i++] }
+		return Detection(o[0] != 0.0, o[1], o[2], o[3].toInt(), o[4].toInt(), R, t, timings, total, samples, segments, presence, coverage)
 	}
 
 	fun estimateFocal(frame: FrameInfo): Focal {

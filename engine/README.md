@@ -14,6 +14,7 @@ apps. The Python package stays the reference; `tools/parity.py` checks the engin
 	tools/parity.py            engine vs the Python reference over all samples
 	tools/api_check.py         tracking / renamed frames / turn scoring on the samples
 	tools/focal_check.py       focal length estimation vs the samples' true K
+	tools/presence_check.py    cube-presence score on positives (video, photos) and generated negatives
 	tools/real_video.py        per-frame detection on a real (unlabelled) video, overlays and cost / extent statistics
 	tools/hud_video.py         a detection HUD on a video, with the engine's real latency (× a phone factor)
 	tools/state_tracker.py     app-layer prototype on a camera stream: FOV → evidence of every frame → Bayesian colour
@@ -112,6 +113,13 @@ so an app should score frames where the turn has settled (lattice cost back to n
   default. Real photo without EXIF (`klstudio/footages.local/rubik-samples/IMG_20190901_150650.jpg`): fx ≈ 1.1 × long
   side, support 0.67; the coarse curve peaks clearly at 1.23.
 - Speed: ~0.56 s per view vs ~4.6 s in Python on the same machine (single thread each).
+- Cube presence (`ViewResult::presence`, `tools/presence_check.py`): mean lattice-line coverage of the best two faces
+  (of a face's 8 lines, those with a fitting segment) − lattice cost, 0 for an implausible projected size. Negatives:
+  5 seedream text-to-image scenes with no cube but many orthogonal edges (grid notebook, carton, keyboard, tiles,
+  bookshelf; `~/data/rubik-renderer/tools/gen_negatives.py`), 30 views with flips / crops / ±8° rotations: presence
+  ≤ 0.31 (≤ 0.45 with fx off by up to 25 %); positives: synthetic photos ≥ 0.70 (renders ≥ 0.83), real video 69 % of
+  frames ≥ 0.5. Threshold 0.5. Cost alone separates less (a negative crop at 0.136); a flat grid covers one face at
+  most, a cube two or three.
 - Real hand-held video (`klstudio/footages.local/VID_20261028_225115.mp4`, 720×1280, 30 fps, GAN stickerless cube on
   a desk, hand-held, frames extracted to `~/data/rubik-renderer/real/vid225115`), every 2nd frame on its own (wide),
   fx 1070 (estimateFocal over 4 frames): before 69 % of frames fit (cost ≤ 0.15), 586 ms, but 11 of the accepted

@@ -107,7 +107,18 @@ struct ViewResult {
 	std::vector<FaceletSample> samples;   // the 27 visible facelets (view frame)
 	std::vector<Segment> segments;        // if keepSegments
 	Timings timings;
+	// Is there a cube at all? faceCoverage: per cube axis, the share of the 8 lattice lines of its face (turned to the
+	// camera) with a fitting segment on them. presence = mean coverage of the best two faces − latticeCost, 0 when the
+	// projected cube is implausibly small or large (outside [0.75 · minExtent, maxExtent] of the long side). A flat grid
+	// (a notebook, tiles, a keyboard) covers one face at most; a cube two or three. On 5 generated scenes without a cube
+	// (30 views with flips, crops, rotations) presence ≤ 0.45 at any fx within ±25 %; on the synthetic photos ≥ 0.8; on
+	// a real hand-held video 63–67 % of frames ≥ 0.5 (the rest: blur, the hand over the cube, fits off by a cubie).
+	// Suggested threshold 0.5 (PRESENCE_THRESHOLD).
+	std::array<double, 3> faceCoverage{};
+	double presence = 0;
 };
+
+constexpr double PRESENCE_THRESHOLD = 0.5;
 
 // Focal length of an unknown camera, a step of its own before detection (and stable after it): the focal length
 // whose lattice fit explains the largest share of all segment weight, averaged over the images given (several views

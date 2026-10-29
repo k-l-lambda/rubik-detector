@@ -1,7 +1,10 @@
 // The application layer: the state_tracker.py / follow_tracker.py prototype as one pipeline over camera frames.
 // No Android imports (the host check runs it on rendered videos).
 //
-//	focal     the focal length from the first frame (Detector.estimateFocal), or given (camera intrinsics)
+//	presence  every frame first: is there a cube at all (the engine's presence score of the detection, ≥
+//	          presenceThreshold)? Nothing below it is evidence, followed, or drawn. Before the focal length is known
+//	          the check runs with a provisional fx (provisionalFocal × long side; the score holds within ±25 %).
+//	focal     the focal length from the first frame with a cube (Detector.estimateFocal), or given (camera intrinsics)
 //	acquire   every good frame is evidence: frames linked to the previous one (small rotation up to a renaming,
 //	          agreeing colours) form a chain placed through the renamings; a chain's first frame is placed by
 //	          colour. Per facelet the Bayesian colour posterior (each frame right with an unknown probability,
@@ -34,6 +37,8 @@ class Settings(
 	var maxEvidence: Int = 200,
 	var workWidth: Int = 1024,
 	var keepSegments: Boolean = true,
+	var presenceThreshold: Double = 0.5,
+	var provisionalFocal: Double = 1.0,
 )
 
 enum class Stage { FOCAL, ACQUIRE, FOLLOW }
@@ -76,6 +81,8 @@ class StepTimes(
 // What one processed frame leaves for the UI (immutable).
 class Snapshot(
 	val stage: Stage,
+	val present: Boolean,           // a cube in the frame (presence ≥ threshold): only then are detection and HUD shown
+	val presence: Double,
 	val time: Double,
 	val frame: FrameInfo,
 	val fx: Double,
@@ -166,6 +173,13 @@ class Pipeline(val settings: Settings = Settings()) {
 		tEstimate = 0.0
 		tFollow = 0.0
 		if (stage == Stage.FOCAL) {
+			// no focal estimate on a frame without a cube: it would fit the scene's lines
+			val provisional = settings.provisionalFocal * maxOf(frame.width, frame.height)
+			val probe = timed({ tFirst += it }) { detector.detect(frame, provisional, null, settings.workWidth, settings.keepSegments) }
+			probe.mode = "probe"
+			probe.time = time
+			if (probe.presence < settings.presenceThreshold)
+				return snapshot(time, frame, probe, false, null, started)
 			val f = detector.estimateFocal(frame)
 			focal = f
 			if (f.ok && f.fx > 0) {
@@ -175,10 +189,10 @@ class Pipeline(val settings: Settings = Settings()) {
 			}
 			else
 				event("focal estimate failed", time)
-			return snapshot(time, frame, null, false, null, started)
+			return snapshot(time, frame, probe, false, null, started)
 		}
 		val (r, link) = track(detector, frame, time)
-		val good = r.ok && r.latticeCost <= settings.fallbackCost
+		val good = r.ok && r.latticeCost <= settings.fallbackCost && r.presence >= settings.presenceThreshold
 		when (stage) {
 			Stage.ACQUIRE -> timed({ tEstimate += it }) { acquire(time) }
 			Stage.FOLLOW -> if (good && fitsWell(r)) {
@@ -206,7 +220,8 @@ class Pipeline(val settings: Settings = Settings()) {
 		val net = net(follow)
 		val evs = events.toList()
 		val steps = StepTimes(tFirst, tRetry, tPlace, tEstimate, tFollow, (System.nanoTime() - snapStarted) / 1e6)
-		return Snapshot(stage, time, frame, fx, focal, r, good, link, frames.size, chainCount, covered, estimate,
+		val presence = r?.presence ?: 0.0
+		return Snapshot(stage, presence >= settings.presenceThreshold, presence, time, frame, fx, focal, r, good, link, frames.size, chainCount, covered, estimate,
 			stable.size, follow, net, (System.nanoTime() - started) / 1e6, evs, steps)
 	}
 
@@ -273,13 +288,13 @@ class Pipeline(val settings: Settings = Settings()) {
 			r = timed({ tFirst += it }) { detector.detect(frame, fx, prior, settings.workWidth, settings.keepSegments) }
 			mode = "local"
 		}
-		if (r == null || !r.ok || r.latticeCost > settings.fallbackCost) {
+		if (r == null || !r.ok || r.latticeCost > settings.fallbackCost || r.presence < settings.presenceThreshold) {
 			r = timed({ if (prior != null) tRetry += it else tFirst += it }) { detector.detect(frame, fx, null, settings.workWidth, settings.keepSegments) }
 			mode = if (mode == "local") "fallback" else "wide"
 		}
 		r.mode = mode
 		r.time = time
-		val good = r.ok && r.latticeCost <= settings.fallbackCost
+		val good = r.ok && r.latticeCost <= settings.fallbackCost && r.presence >= settings.presenceThreshold
 		if (!good) {
 			prev = null
 			return Pair(r, null)

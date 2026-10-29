@@ -24,7 +24,7 @@ class View(ctypes.Structure):
 		("lattice_cost", ctypes.c_double), ("segment_count", ctypes.c_int32), ("family_segments", ctypes.c_int32),
 		("camera", ctypes.c_double * 4), ("support", ctypes.c_double),
 		("ms_segments", ctypes.c_double), ("ms_axes", ctypes.c_double), ("ms_position", ctypes.c_double), ("ms_sampling", ctypes.c_double),
-		("sample_count", ctypes.c_int32), ("samples", Sample * 27)]
+		("sample_count", ctypes.c_int32), ("samples", Sample * 27), ("presence", ctypes.c_double), ("face_coverage", ctypes.c_double * 3)]
 
 
 class Focal(ctypes.Structure):
@@ -93,7 +93,7 @@ def view_dict(v):
 		"lattice_cost": v.lattice_cost, "segments": v.segment_count, "family_segments": v.family_segments,
 		"camera": list(v.camera), "support": v.support,
 		"ms": {"segments": v.ms_segments, "axes": v.ms_axes, "position": v.ms_position, "sampling": v.ms_sampling},
-		"samples": samples, "_raw": v}
+		"samples": samples, "presence": v.presence, "face_coverage": list(v.face_coverage), "_raw": v}
 
 
 class Detector:

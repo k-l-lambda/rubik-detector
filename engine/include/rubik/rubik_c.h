@@ -45,7 +45,11 @@ typedef struct {
 	double ms_segments, ms_axes, ms_position, ms_sampling;
 	int32_t sample_count;
 	rk_sample samples[27];
+	double presence;         // ViewResult::presence (threshold RK_PRESENCE_THRESHOLD)
+	double face_coverage[3];
 } rk_view;
+
+#define RK_PRESENCE_THRESHOLD 0.5
 
 RK_API void rk_default_options (rk_options* options);
 RK_API rk_detector* rk_detector_new (void);
