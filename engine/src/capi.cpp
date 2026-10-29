@@ -488,6 +488,11 @@ void rk_tracker_track (rk_tracker* t, const uint8_t* data, int32_t width, int32_
 		out->ms_pyramid = r.msPyramid;
 		out->ms_flow = r.msFlow;
 		out->ms_pose = r.msPose;
+		out->turning = r.turning;
+		std::copy(r.turnNormal.begin(), r.turnNormal.end(), out->turn_normal);
+		out->turn_score = r.turnScore;
+		out->turn_in = r.turnIn;
+		out->turn_out = r.turnOut;
 		out->point_count = int32_t(std::min<size_t>(r.points.size(), 64));
 		for (int i = 0; i < out->point_count; i++) {
 			out->points[i][0] = r.points[i][0];

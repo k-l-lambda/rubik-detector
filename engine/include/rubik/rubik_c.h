@@ -168,6 +168,9 @@ typedef struct {
 	double ms_pyramid, ms_flow, ms_pose;
 	int32_t point_count;
 	float points[64][2];
+	int32_t turning;         // TrackResult turning-layer signal
+	double turn_normal[3];
+	double turn_score, turn_in, turn_out;
 } rk_track_result;
 
 RK_API rk_tracker* rk_tracker_new (void);

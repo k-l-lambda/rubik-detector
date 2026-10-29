@@ -467,16 +467,15 @@ TrackResult FrameTracker::track (const Image& image) {
 	}
 	t0 = std::chrono::steady_clock::now();
 	std::vector<State::Point> moved;
-	std::vector<V3> object;
+	std::vector<V3> object, lost;
 	std::vector<std::array<double, 2>> pixels;
 	for (const auto& p : S.points) {
 		float x1, y1, xb, yb;
-		if (!lucasKanade(S.prev, cur, p.x, p.y, x1, y1, options))
+		if (!lucasKanade(S.prev, cur, p.x, p.y, x1, y1, options) || !lucasKanade(cur, S.prev, x1, y1, xb, yb, options) ||
+			std::hypot(xb - p.x, yb - p.y) > options.forwardBackward) {
+			lost.push_back(p.object);
 			continue;
-		if (!lucasKanade(cur, S.prev, x1, y1, xb, yb, options))
-			continue;
-		if (std::hypot(xb - p.x, yb - p.y) > options.forwardBackward)
-			continue;
+		}
 		moved.push_back({p.object, x1, y1});
 		object.push_back(p.object);
 		pixels.push_back({x1, y1});
@@ -495,6 +494,54 @@ TrackResult FrameTracker::track (const Image& image) {
 		S.tracking = false;
 		out.error = "too few points follow the cube";
 		return out;
+	}
+	// which outer layer turns (the rest keeps the rigid pose): its vertices' outliers and lost points
+	{
+		struct Score { double score = -1e9, in = 0, out = 0; int a = 0, s = 1; };
+		Score best, second;
+		for (int a = 0; a < 3; a++)
+			for (int s : {-1, 1}) {
+				auto member = [&](const V3& v) { return std::fabs(v[a] - s * 1.5) < 1e-6; };
+				auto cut = [&](const V3& v) { return std::fabs(v[a] - s * 0.5) < 1e-6; };
+				double in = 0, out = 0, kept = 0;
+				int members = 0;
+				for (size_t i = 0; i < moved.size(); i++) {
+					const V3& v = moved[i].object;
+					members += member(v);
+					if (!inlier[i]) {
+						if (member(v))
+							in += 1;
+						else if (!cut(v))   // on the cut a vertex is split between the layer and the middle: no evidence
+							out += 1;
+					}
+					else if (member(v))
+						kept += 1;
+				}
+				for (const V3& v : lost) {
+					members += member(v);
+					if (member(v))
+						in += options.lostWeight;
+					else if (!cut(v))
+						out += options.lostWeight;
+				}
+				if (members < 3)
+					continue;
+				Score c{in - out - 0.5 * kept, in, out, a, s};
+				if (c.score > best.score) {
+					second = best;
+					best = c;
+				}
+				else if (c.score > second.score)
+					second = c;
+			}
+		if (best.score >= options.turnMinScore && best.in >= 3 && best.score - std::max(second.score, 0.0) >= options.turnMargin) {
+			out.turning = true;
+			V3 n = column(R, best.a);
+			out.turnNormal = {best.s * n.x, best.s * n.y, best.s * n.z};
+			out.turnScore = best.score;
+			out.turnIn = best.in;
+			out.turnOut = best.out;
+		}
 	}
 	S.R = R;
 	S.t = t;

@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -85,7 +86,7 @@ fun DetectorScreen(session: CameraSession, owner: androidx.lifecycle.LifecycleOw
 	val stats by session.stats.collectAsState()
 	var tracking by remember { mutableStateOf(session.tracking) }
 	var showSegments by remember { mutableStateOf(false) }
-	var showSamples by remember { mutableStateOf(true) }
+	var showSamples by remember { mutableStateOf(false) }   // the facelet quads at the cube (debug; the mini cube shows the state)
 	var showAxes by remember { mutableStateOf(true) }
 	var frozen by remember { mutableStateOf(false) }
 	var cameraFocal by remember { mutableStateOf(false) }
@@ -103,16 +104,21 @@ fun DetectorScreen(session: CameraSession, owner: androidx.lifecycle.LifecycleOw
 			Canvas(Modifier.fillMaxSize()) {
 				val s = snapshot
 				val h = hud
-				if (tracking && h != null && h.mode == HudMode.TRACKED) {
-					// the tracked pose every frame; the detection's segments under it if asked
-					if (s != null && showSegments)
-						drawDetection(s, true, false, false)
+				// at the cube only the tracked points (and, asked for, the detection's segments / quads, the axes)
+				if (s != null && showSegments)
+					drawDetection(s, true, false, false)
+				if (tracking && h != null && h.mode == HudMode.TRACKED)
 					drawTracked(h, showSamples, showAxes, s?.fx ?: 0.0)
-				}
-				else if (s != null)
-					// no track: the last detection, dimmed while tracking is on (it is that old)
-					drawDetection(s, showSegments, showSamples, showAxes, if (tracking) 0.45f else 1f)
+				else if (!tracking && s != null)
+					drawDetection(s, false, showSamples, showAxes)
 			}
+			// bottom right: the reconstructed cube, turned like the tracked one, colour saturation = confidence
+			if (tracking)
+				hud?.let { h ->
+					Box(Modifier.align(Alignment.BottomEnd).padding(6.dp).size(150.dp).background(Color(0xa0101010), RoundedCornerShape(10.dp))) {
+						Canvas(Modifier.fillMaxSize()) { drawMini(h.mini) }
+					}
+				}
 			snapshot?.let { s ->
 				Box(Modifier.align(Alignment.TopEnd).padding(6.dp).background(Color(0xb0101010)).padding(4.dp)) {
 					CubeNet(s.net, Modifier.width(150.dp).aspectRatio(4f / 3f))
@@ -133,7 +139,7 @@ fun DetectorScreen(session: CameraSession, owner: androidx.lifecycle.LifecycleOw
 			FilterChip(selected = false, onClick = { session.dump() }, label = { Text("dump") })
 		}
 		Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-			FilterChip(selected = showSamples, onClick = { showSamples = !showSamples }, label = { Text("stickers") })
+			FilterChip(selected = showSamples, onClick = { showSamples = !showSamples }, label = { Text("quads") })
 			FilterChip(selected = showSegments, onClick = { showSegments = !showSegments }, label = { Text("segments") })
 			FilterChip(selected = showAxes, onClick = { showAxes = !showAxes }, label = { Text("axes") })
 			FilterChip(selected = tracking, onClick = { tracking = !tracking; session.tracking = tracking }, label = { Text("track") })
@@ -174,7 +180,26 @@ private val FAMILY = listOf(Color(0xffff4040), Color(0xff40ff40), Color(0xff4080
 fun trackHeadline(h: Hud?): String = when (h?.mode) {
 	null, HudMode.NONE -> "no track yet"
 	HudMode.LOST -> "track lost: waiting for a detection"
-	HudMode.TRACKED -> String.format("TRACKED %d pts %.1f px  detection %.0f ms ago", h.track!!.inliers, h.track.reprojection, h.detectionAge * 1000)
+	HudMode.TRACKED -> String.format("TRACKED %d pts %.1f px  detection %.0f ms ago%s", h.track!!.inliers, h.track.reprojection, h.detectionAge * 1000,
+		if (h.turning) "  · layer turning" else "")
+} + (h?.let { "\n" + it.stateText } ?: "")
+
+// the mini cube's polygons, fitted to the canvas (cube units: the cube's diagonal ~5.2)
+fun DrawScope.drawMini(view: MiniView) {
+	val k = size.minDimension / 5.4f
+	val cx = size.width / 2
+	val cy = size.height / 2
+	for (poly in MiniCube.polygons(view)) {
+		val path = Path().apply {
+			moveTo(cx + poly.points[0] * k, cy + poly.points[1] * k)
+			for (i in 1 until 4)
+				lineTo(cx + poly.points[2 * i] * k, cy + poly.points[2 * i + 1] * k)
+			close()
+		}
+		drawPath(path, Color(poly.argb))
+		if (poly.outline)
+			drawPath(path, Color.Black, style = Stroke(width = 1f))
+	}
 }
 
 fun describeTrack(h: Hud?): String = buildString {
@@ -182,6 +207,9 @@ fun describeTrack(h: Hud?): String = buildString {
 		return@buildString
 	val tr = h.track
 	appendLine(String.format("track %s  frame %d  tracker thread %.1f ms (applying detections %.1f)", h.mode, h.index, h.msTrack, h.msApply))
+	appendLine("  " + h.stateText)
+	if (h.turning)
+		appendLine("  a layer is turning (its points leave the rigid pose): a hint for the follower")
 	if (tr != null)
 		appendLine(String.format("  %d points followed, %d inliers, reprojection %.2f px; ms pyramid %.1f flow %.1f pose %.2f",
 			tr.tracked, tr.inliers, tr.reprojection, tr.ms[0], tr.ms[1], tr.ms[2]))
@@ -213,7 +241,8 @@ fun DrawScope.drawTracked(h: Hud, samples: Boolean, axes: Boolean, fx: Double) {
 				drawPath(path, Color(c).copy(alpha = 0.6f))
 			drawPath(path, Color.White, style = Stroke(width = 2f))
 		}
-	h.track?.points?.forEach { p -> drawCircle(Color(0xffff40ff), 3f, m.map(p[0], p[1])) }
+	val pointColour = if (h.turning) Color(0xffffdc00) else Color(0xffff40ff)   // yellow while a layer turns
+	h.track?.points?.forEach { p -> drawCircle(pointColour, 4f, m.map(p[0], p[1])) }
 	val R = h.R
 	val t = h.t
 	if (axes && R != null && t != null && fx > 0) {

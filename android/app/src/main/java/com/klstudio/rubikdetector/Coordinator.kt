@@ -28,6 +28,10 @@ class TrackSettings(
 	var ring: Int = 24,                 // camera frames kept for catching up (at 30 fps 0.8 s; 16 lost detections on v103)
 	var historyLength: Int = 64,        // tracked poses kept by frame index
 	var blend: Double = 0.3,            // share of an agreeing detection taken into the tracked pose (1: replace it)
+	var hints: Boolean = true,          // pass the tracker's turn signal to the follower
+	var turnFrames: Int = 3,            // tracked frames in a row with the same turning layer that make a turn hint
+	var hintSeconds: Double = 1.5,      // a hint is offered to the follower's detections for this long
+	var twistSeconds: Double = 0.35,    // the mini cube's animation of a quarter turn (a half turn 1.6×)
 	var catchUpSteps: Int = 3,          // frames tracked through when catching up from a detection's frame (fewer: the
 	                                    // tracker thread back sooner; on a real video at 2× latency 3 beat 6, 12, 24)
 )
@@ -35,6 +39,9 @@ class TrackSettings(
 enum class HudMode { NONE, TRACKED, LOST }
 
 class Hud(
+	val mini: MiniView,                 // the reconstructed cube, at the tracked orientation, a twist being played
+	val stateText: String,              // the state's overall confidence
+	val turning: Boolean,               // the tracker sees a layer turn (a run of turnFrames)
 	val index: Long,
 	val time: Double,
 	val frame: FrameInfo,
@@ -70,6 +77,42 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 	private var disagreements = 0
 	private var everTracked = false
 	private val events = ArrayList<String>()
+	// turn signal: the current run of frames with one turning layer, and the hints (run start → normal, pose, time)
+	private var turnRun = 0
+	private var turnRunStart = -1L
+	private var turnRunNormal: DoubleArray? = null
+	private class Signal(val normal: DoubleArray, val track: Track, val time: Double)
+	private val signals = LinkedHashMap<Long, Signal>()
+	// the mini cube: the follower's moves animated, newest last (move, start time)
+	private val animations = ArrayList<Pair<String, Double>>()
+	private var movesSeen = 0
+	private var lastPlacement = -1
+	private var lastPlacementR: DoubleArray? = null
+	// the tracked view frame → the state's frame (per view facelet the state facelet), and the facing pose it is for:
+	// carried from frame to frame (the renaming between consecutive frames is unambiguous; between a detection and a
+	// frame after a whole-cube turn it is not)
+	private var viewMap: IntArray? = null
+	private var viewMapR: DoubleArray? = null
+
+	// b's facelet j as a's facelet: b's facelet k is a's facelet perms[g][k]
+	private fun carried(map: IntArray, from: DoubleArray, to: DoubleArray): IntArray {
+		val (_, g) = Cube.frameMatch(from, to)
+		return IntArray(54) { map[Cube.perms[g][it]] }
+	}
+
+	// a placement for the detection of frame k (rotation Rk): the map from its view frame, carried along the frames
+	// tracked since
+	private fun placeAt(k: Long, placement: Int, Rk: DoubleArray) {
+		var map = IntArray(54) { Cube.perms[placement][it] }
+		var R = Rk
+		val later = synchronized(history) { history.entries.filter { it.key >= k }.sortedBy { it.key }.map { it.value.first.R } }
+		for (Ri in later) {
+			map = carried(map, R, Ri)
+			R = Ri
+		}
+		viewMap = map
+		viewMapR = R
+	}
 	// counts of what happened to detections and tracks
 	val stats = java.util.concurrent.ConcurrentHashMap<String, Int>()
 	private fun count(key: String) = stats.merge(key, 1, Int::plus)
@@ -139,7 +182,21 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 		// the tracker's pose at this frame, if healthy (a lost track's last pose was tried: local searches from it found
 		// a cubie-shifted fit often enough to start wrong tracks — 90 vs 16 frames > 0.3 cubie on a real video)
 		val prior = synchronized(history) { history[index]?.first?.takeIf { healthy(it) } }?.let { Pair(it.R, it.t) }
-		return pipeline.process(detector, frame, time, prior)
+		return pipeline.process(detector, frame, time, prior, hint(index, time))
+	}
+
+	// the newest turn the tracker saw (within hintSeconds), its face's normal moved on to frame `index`
+	private fun hint(index: Long, time: Double): TurnHint? {
+		if (!settings.hints)
+			return null
+		val (id, sig) = synchronized(signals) { signals.entries.lastOrNull()?.toPair() } ?: return null
+		if (time - sig.time > settings.hintSeconds)
+			return null
+		val now = synchronized(history) { history[index]?.first } ?: return TurnHint(id, sig.normal)
+		val (_, g) = Cube.frameMatch(sig.track.R, now.R)
+		val dR = Cube.mul(now.R, Cube.transpose(Cube.renamed(sig.track.R, g)))
+		val n = sig.normal
+		return TurnHint(id, DoubleArray(3) { r -> dR[r * 3] * n[0] + dR[r * 3 + 1] * n[1] + dR[r * 3 + 2] * n[2] })
 	}
 
 	fun post(index: Long, snapshot: Snapshot) {
@@ -149,6 +206,75 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 	// --- tracker thread ------------------------------------------------------------------------------------------
 
 	private fun healthy(t: Track) = t.ok && t.inliers >= settings.healthyInliers && t.reprojection <= settings.healthyReprojection
+
+	private var lastTrackTime = 0.0
+
+	private fun duration(move: String) = settings.twistSeconds * (if (move.endsWith("2")) 1.6 else 1.0)
+
+	private fun inverse(move: String) = when {
+		move.endsWith("2") -> move
+		move.endsWith("'") -> move.dropLast(1)
+		else -> "$move'"
+	}
+
+	// the mini cube at frame time `time`: the state (follower's or the estimate's) with the follower's newest turns played
+	private fun miniView(time: Double, track: Track?): Pair<MiniView, String> {
+		val s = lastSnapshot
+		// tracked: the tracked orientation with the carried map; not: the last placed detection's own frame
+		val tracked = track?.takeIf { it.ok && viewMap != null && viewMapR === it.R }
+		val R = tracked?.R ?: lastPlacementR ?: MiniCube.defaultR()
+		val viewToState: IntArray? = when {
+			tracked != null -> viewMap
+			lastPlacementR != null && lastPlacement >= 0 -> IntArray(54) { Cube.perms[lastPlacement][it] }
+			else -> null
+		}
+		val follow = s?.follow
+		var colours = IntArray(54) { MiniCube.GREY }
+		var letters: CharArray? = null
+		var twist: MiniTwist? = null
+		val text: String
+		if (follow != null) {
+			// play the turns still running: the state before them, the current one's layer part way
+			animations.removeAll { (m, t) -> t + duration(m) <= time }
+			var shown = follow.state
+			val playing = animations.filter { (m, t) -> t + duration(m) > time }
+			for ((m, _) in playing.reversed())
+				shown = Engine.applyMoves(shown, inverse(m))
+			if (playing.isNotEmpty() && viewToState != null) {
+				val (m, t0) = playing.first()
+				val progress = ((time - t0) / duration(m)).coerceIn(0.0, 1.0)
+				if (progress > 0) {
+					// the turned face of the state's frame in the view frame: the view face whose centre maps to it
+					val viewFace = (0 until 6).firstOrNull { f -> Cube.FACES[viewToState[f * 9 + 4] / 9] == m[0] }
+					if (viewFace != null)
+						twist = MiniCube.twistFor(viewFace, m.substring(1), progress)
+				}
+			}
+			if (viewToState != null) {
+				colours = IntArray(54) { k -> follow.colours[shown[viewToState[k]]] ?: MiniCube.GREY }
+				letters = CharArray(54) { k -> shown[viewToState[k]] }
+			}
+			text = String.format("state locked (confidence at lock %.2f), %d turns followed; %s", follow.lockConfidence, follow.moves.size, follow.decision)
+		}
+		else {
+			val e = s?.estimate
+			val net = s?.net
+			if (net != null && viewToState != null && e?.state != null && e.legal)
+				letters = CharArray(54) { k -> e.state[viewToState[k]] }
+			if (net != null && viewToState != null)
+				colours = IntArray(54) { k ->
+					val j = viewToState[k]
+					if (!net.known[j]) MiniCube.GREY else MiniCube.withConfidence(net.colour[j], net.confidence[j])
+				}
+			text = when {
+				e == null || !e.ok -> "state: no evidence yet"
+				e.legal -> String.format("state confidence %.2f (Π over the facelets; min %.2f), %d/54 observed",
+					e.confidence.fold(1.0) { a, c -> a * c }, e.minConfidence, e.coverage)
+				else -> String.format("colours only: %d/54 observed (a legal state from 45)", e.coverage)
+			}
+		}
+		return Pair(MiniView(R, colours, twist, letters), text)
+	}
 
 	fun trackStep(index: Long): Hud? {
 		val started = System.nanoTime()
@@ -162,6 +288,7 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 			time = f.time
 			tracker.setFrame(f.buffer, f.width, f.height, f.stride, f.rotation)
 		} ?: return null
+		lastTrackTime = time
 		var track = tracker.track(frame)
 		if (seeded && !track.ok) {
 			// one retry from the previous frame with fresh points at its pose (a blurred frame or a passing finger can
@@ -182,6 +309,29 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 			if (track.ok) {
 				remember(index, track, frame)
 				everTracked = true
+				val map = viewMap
+				val from = viewMapR
+				if (map != null && from != null) {
+					viewMap = carried(map, from, track.R)
+					viewMapR = track.R
+				}
+				// a run of frames with one layer turning is a hint for the follower (one per run: its start is its id)
+				val n0 = turnRunNormal
+				if (track.turning && n0 != null && n0[0] * track.turnNormal[0] + n0[1] * track.turnNormal[1] + n0[2] * track.turnNormal[2] > 0.9)
+					turnRun++
+				else if (track.turning) {
+					turnRun = 1
+					turnRunStart = index
+				}
+				else
+					turnRun = 0
+				turnRunNormal = if (track.turning) track.turnNormal else null
+				if (turnRun >= settings.turnFrames)
+					synchronized(signals) {
+						signals[turnRunStart] = Signal(track.turnNormal, track, time)
+						while (signals.size > 8)
+							signals.remove(signals.keys.first())
+					}
 			}
 			else {
 				seeded = false
@@ -216,6 +366,36 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 
 	private fun apply(k: Long, s: Snapshot) {
 		lastSnapshot = s
+		// the placement of a view frame into the state's frame, with the rotation of that same detection: following,
+		// the follower's last scored one (not necessarily this snapshot's detection); acquiring, this detection's
+		val f0 = s.follow
+		val d0 = s.detection
+		if (f0 != null) {
+			if (f0.placement >= 0 && f0.placementR != null) {
+				lastPlacement = f0.placement
+				lastPlacementR = f0.placementR
+				if (d0 != null && f0.placementR === d0.R)   // the follower scored this frame's detection
+					placeAt(k, f0.placement, d0.R)
+			}
+		}
+		else if (s.placement >= 0 && d0 != null && s.good) {
+			lastPlacement = s.placement
+			lastPlacementR = d0.R
+			placeAt(k, s.placement, d0.R)
+		}
+		s.follow?.let { f ->
+			// turns the follower took since: animated on the mini cube, after the ones still playing
+			if (f.moves.size > movesSeen) {
+				val start = maxOf(lastTrackTime, animations.lastOrNull()?.let { (m, t) -> t + duration(m) } ?: 0.0)
+				var t = start
+				for (entry in f.moves.drop(movesSeen))
+					for (m in entry.split(" ").filter { it.isNotEmpty() }) {
+						animations.add(Pair(m, t))
+						t += duration(m)
+					}
+			}
+			movesSeen = f.moves.size
+		}
 		val d = s.detection ?: return
 		if (!s.present) {
 			noCube++
@@ -355,12 +535,15 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 			}
 		}
 		val evs = synchronized(events) { events.toList() }
-		return Hud(index, time, frame, mode, track?.R, track?.t, quads, colours, track,
+		val (mini, stateText) = miniView(time, if (mode == HudMode.TRACKED) track else null)
+		return Hud(mini, stateText, turnRun >= settings.turnFrames, index, time, frame, mode, track?.R, track?.t, quads, colours, track,
 			if (lastFitTime.isNaN()) Double.NaN else time - lastFitTime, lastSnapshot, ms, msApply, evs)
 	}
 
 	// tracker thread: drop the track and what it was seeded from (a reset of the app)
 	fun resetTrack() {
+		viewMap = null
+		viewMapR = null
 		seeded = false
 		everTracked = false
 		lastFit = null

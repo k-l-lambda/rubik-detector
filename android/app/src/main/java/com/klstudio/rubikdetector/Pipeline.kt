@@ -31,6 +31,7 @@ class Settings(
 	var switchMargin: Double = 15.0,
 	var strongMargin: Double = 80.0,
 	var confirm: Int = 2,
+	var hintBonus: Double = 8.0,        // follow: nll off the turn prior of candidates turning the face the tracker saw turn
 	var conflictNll: Double = 4.0,
 	var maxConflicts: Int = 2,
 	var globalAfter: Int = 3,
@@ -45,6 +46,10 @@ enum class Stage { FOCAL, ACQUIRE, FOLLOW }
 
 class LinkInfo(val angle: Double, val colour: Double, val linked: Boolean)
 
+// The tracker saw a layer turn (its points left the rigid pose for a few frames): the face's outward normal in the
+// camera frame of the frame being detected. id: the tracked frame it was seen on (a hint is used for one switch).
+class TurnHint(val id: Long, val normal: DoubleArray)
+
 class FollowInfo(
 	val state: String,
 	val moves: List<String>,
@@ -55,6 +60,10 @@ class FollowInfo(
 	val margin: Double?,
 	val scoreMs: Double,
 	val colours: Map<Char, Int>,
+	val placementR: DoubleArray?,   // the detection the last step scored, and its view frame's placement into the
+	val placement: Int,             // state's frame (rotation index; -1 none)
+	val hinted: Boolean,            // the last switch was a turn of the face the tracker saw turn
+	val lockConfidence: Double,     // Π of the facelet confidences of the estimate locked
 )
 
 // The cube net to draw: per facelet (common frame) whether anything is known, its colour (ARGB), the best component
@@ -101,6 +110,7 @@ class Snapshot(
 	val events: List<String>,
 	val steps: StepTimes,
 	val fits: Boolean,              // good and evidence-grade (the relative cost gate): a pose to re-seed a tracker from
+	val placement: Int,             // the detection's view frame placed into the estimate's frame (rotation index; -1 none)
 )
 
 class Pipeline(val settings: Settings = Settings()) {
@@ -167,7 +177,7 @@ class Pipeline(val settings: Settings = Settings()) {
 
 	// One camera frame, already set upright on the detector. time: capture time in seconds. prior: the local search's
 	// start (the frame tracker's pose at this frame) instead of the prediction from the last detections.
-	fun process(detector: Detector, frame: FrameInfo, time: Double, prior: Pair<DoubleArray, DoubleArray>? = null): Snapshot {
+	fun process(detector: Detector, frame: FrameInfo, time: Double, prior: Pair<DoubleArray, DoubleArray>? = null, hint: TurnHint? = null): Snapshot {
 		val started = System.nanoTime()
 		tFirst = 0.0
 		tRetry = 0.0
@@ -199,7 +209,7 @@ class Pipeline(val settings: Settings = Settings()) {
 			Stage.ACQUIRE -> timed({ tEstimate += it }) { acquire(time) }
 			Stage.FOLLOW -> if (good && fitsWell(r)) {
 				val f = follower!!
-				val decision = timed({ tFollow += it }) { f.step(r) }
+				val decision = timed({ tFollow += it }) { f.step(r, hint) }
 				if (decision == "switch")
 					event("turned ${f.moves.last()} → followed", time)
 				if (f.misses >= settings.globalAfter) {
@@ -224,8 +234,9 @@ class Pipeline(val settings: Settings = Settings()) {
 		val steps = StepTimes(tFirst, tRetry, tPlace, tEstimate, tFollow, (System.nanoTime() - snapStarted) / 1e6)
 		val presence = r?.presence ?: 0.0
 		val fits = r != null && good && fitsWell(r)
+		val placement = if (follow != null) follow.placement else (r?.rotation ?: -1)
 		return Snapshot(stage, presence >= settings.presenceThreshold, presence, time, frame, fx, focal, r, good, link, frames.size, chainCount, covered, estimate,
-			stable.size, follow, net, (System.nanoTime() - started) / 1e6, evs, steps, fits)
+			stable.size, follow, net, (System.nanoTime() - started) / 1e6, evs, steps, fits, placement)
 	}
 
 	private fun net(follow: FollowInfo?): Net {
@@ -400,7 +411,7 @@ class Pipeline(val settings: Settings = Settings()) {
 				stable.add(e.state!!)
 		}
 		if (stable.size >= settings.lockStable) {
-			follower = Follower(settings, e.state!!, e.model, lockColours(e))
+			follower = Follower(settings, e.state!!, e.model, lockColours(e), e.confidence.fold(1.0) { a, c -> a * c })
 			stage = Stage.FOLLOW
 			event("locked ${e.state}", time)
 		}
@@ -430,7 +441,8 @@ class Pipeline(val settings: Settings = Settings()) {
 	}
 }
 
-class Follower(private val settings: Settings, var state: String, private val model: Model, private val colours: Map<Char, Int>) {
+class Follower(private val settings: Settings, var state: String, private val model: Model, private val colours: Map<Char, Int>,
+	private val lockConfidence: Double = 1.0) {
 	val moves = ArrayList<String>()
 	var misses = 0
 		private set
@@ -443,6 +455,11 @@ class Follower(private val settings: Settings, var state: String, private val mo
 	private var lastStateConflicts = 0
 	private var lastMargin: Double? = null
 	private var scoreMs = 0.0
+	private var candidateFaces: List<String> = emptyList()   // per candidate the faces its moves turn
+	private var lastR: DoubleArray? = null
+	private var lastG = -1
+	private var lastHintId = -1L
+	private var lastHinted = false
 
 	private fun neighbours(from: String, moves: String): List<Pair<String, String>> {
 		val last = moves.split(" ").lastOrNull { it.isNotEmpty() }?.get(0)
@@ -459,22 +476,40 @@ class Follower(private val settings: Settings, var state: String, private val mo
 				if (seen.add(c.first))
 					out.add(c)
 			candidates = out
+			candidateFaces = out.map { (_, m) -> m.split(" ").filter { it.isNotEmpty() }.map { it[0] }.joinToString("") }
 			joined = out.joinToString("") { it.first }
 			cacheState = state
 		}
 		return candidates
 	}
 
-	fun step(r: Detection): String {
+	// the face (letter of the state's frame) whose outward normal, with the view frame placed by g, is the hint's
+	private fun hintedFace(r: Detection, g: Int, hint: DoubleArray): Char? {
+		for (fv in 0 until 6) {
+			val axis = fv / 2
+			val sign = if (fv % 2 == 1) 1.0 else -1.0
+			val n = DoubleArray(3) { sign * r.R[it * 3 + axis] }
+			if (n[0] * hint[0] + n[1] * hint[1] + n[2] * hint[2] > 0.8)
+				return Cube.FACES[Cube.perms[g][fv * 9 + 4] / 9]
+		}
+		return null
+	}
+
+	fun step(r: Detection, hint: TurnHint? = null): String {
 		val started = System.nanoTime()
 		val cands = candidates()
-		val prior = DoubleArray(cands.size) { settings.moveCost * cands[it].second.split(" ").count { m -> m.isNotEmpty() } }
+		val base = DoubleArray(cands.size) { settings.moveCost * cands[it].second.split(" ").count { m -> m.isNotEmpty() } }
+		val usable = hint?.takeIf { it.id > lastHintId }
 		var best = Double.MAX_VALUE
 		var bi = 0
 		var bg = 0
 		var scores = DoubleArray(0)
+		var bestPrior = base
+		var bestHinted: Char? = null
 		for (g in 0 until 24) {
 			val s = Engine.scoreModel(model, r, g, joined)
+			val face = usable?.let { hintedFace(r, g, it.normal) }
+			val prior = if (face == null) base else DoubleArray(base.size) { if (face in candidateFaces[it]) base[it] - settings.hintBonus else base[it] }
 			for (i in s.indices) {
 				val v = s[i] + prior[i]
 				if (v < best) {
@@ -482,10 +517,14 @@ class Follower(private val settings: Settings, var state: String, private val mo
 					bi = i
 					bg = g
 					scores = s
+					bestPrior = prior
+					bestHinted = face
 				}
 			}
 		}
-		val withPrior = DoubleArray(scores.size) { scores[it] + prior[it] }
+		lastR = r.R
+		lastG = bg
+		val withPrior = DoubleArray(scores.size) { scores[it] + bestPrior[it] }
 		val stay = withPrior[0]
 		lastConflicts = Engine.conflicts(model, r, bg, cands[bi].first, settings.conflictNll).size
 		lastStateConflicts = Engine.conflicts(model, r, bg, state, settings.conflictNll).size
@@ -515,11 +554,16 @@ class Follower(private val settings: Settings, var state: String, private val mo
 		}
 		val p = pending
 		val count = if (p != null && p.first == cand) p.third + 1 else 1
-		if (count >= settings.confirm || margin >= settings.strongMargin) {
+		// a turn of the face the tracker saw turn needs no second frame
+		val hinted = bestHinted != null && bestHinted in candidateFaces[bi]
+		if (count >= settings.confirm || margin >= settings.strongMargin || hinted) {
 			state = cand
 			moves.add(mv)
 			pending = null
-			decision = String.format("turned %s (+%.0f)", mv, margin)
+			lastHinted = hinted
+			if (hinted)
+				lastHintId = usable!!.id
+			decision = String.format("turned %s (+%.0f%s)", mv, margin, if (hinted) ", turn seen" else "")
 			return "switch"
 		}
 		pending = Triple(cand, mv, count)
@@ -527,5 +571,6 @@ class Follower(private val settings: Settings, var state: String, private val mo
 		return "pending"
 	}
 
-	fun info() = FollowInfo(state, moves.toList(), decision, candidates.size, lastConflicts, lastStateConflicts, lastMargin, scoreMs, colours)
+	fun info() = FollowInfo(state, moves.toList(), decision, candidates.size, lastConflicts, lastStateConflicts, lastMargin, scoreMs, colours,
+		lastR, lastG, lastHinted, lockConfidence)
 }

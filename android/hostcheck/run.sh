@@ -29,6 +29,6 @@ if [ ! -f "$OUT/librubik_jni.so" ] || [ -n "$(find "$ROOT/engine/src" "$ROOT/eng
 fi
 SRC="$ROOT/android/app/src/main/java/com/klstudio/rubikdetector"
 java -cp "$KOTLINC_CP" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler -nowarn -no-reflect -no-stdlib -jvm-target 11 -cp "$KOTLIN_STDLIB" \
-	-d "$OUT/classes" "$SRC/Engine.kt" "$SRC/Cube.kt" "$SRC/Colors.kt" "$SRC/Pipeline.kt" "$SRC/Coordinator.kt" "$HERE"/*.kt 2>&1 | grep -v "^warning: unable to find kotlin" || true
+	-d "$OUT/classes" "$SRC/Engine.kt" "$SRC/Cube.kt" "$SRC/Colors.kt" "$SRC/Pipeline.kt" "$SRC/Coordinator.kt" "$SRC/MiniCube.kt" "$HERE"/*.kt 2>&1 | grep -v "^warning: unable to find kotlin" || true
 # MAIN: HostCheckKt (the detection pipeline alone) or CoordCheckKt (tracking + background detection)
 java -Djava.library.path="$OUT" -cp "$OUT/classes:$KOTLIN_STDLIB" "${MAIN:-HostCheckKt}" "$@"

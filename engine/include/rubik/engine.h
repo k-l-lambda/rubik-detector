@@ -189,6 +189,10 @@ struct TrackOptions {
 	double inlierPixels = 4.0;    // reprojection error of an inlier
 	int minPoints = 6;            // fewer inliers: the track is lost
 	int topUpBelow = 24, topUpTo = 40;   // re-seed visible vertices from the tracked pose when the inliers fall below
+	// turning-layer signal: per outer layer, its vertices' outliers (followed, not fitting the rigid pose) and lost
+	// points (× lostWeight) minus the others' (the cut between the layer and the middle excluded) minus half its
+	// inliers; a layer is turning when its score reaches turnMinScore with ≥ 3 outliers and beats the next by turnMargin
+	double turnMinScore = 4, turnMargin = 2, lostWeight = 0.5;
 };
 
 struct TrackResult {
@@ -201,6 +205,12 @@ struct TrackResult {
 	double reprojection = 0;      // median inlier reprojection error, pixels
 	std::vector<std::array<float, 2>> points;   // the points carried to the next frame (inliers, re-seeded ones), pixels
 	double msPyramid = 0, msFlow = 0, msPose = 0;
+	// a layer turning (the rigid pose holds on the rest): the outward normal of its face in the camera frame, its score
+	// and its outlier / other-outlier counts (TrackOptions::turnMinScore). Evidence, not a decision: a hand over one
+	// layer can look the same.
+	bool turning = false;
+	std::array<double, 3> turnNormal{0, 0, 0};
+	double turnScore = 0, turnIn = 0, turnOut = 0;
 };
 
 // Follows the cube from frame to frame between detections: seed() with a frame and its detected pose, then track()

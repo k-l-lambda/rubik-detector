@@ -333,7 +333,7 @@ JNIEXPORT jboolean JNICALL Java_com_klstudio_rubikdetector_Engine_nativeTrackerR
 }
 
 // Tracks into the frame set last. Out: ok, R (9), t (3), renaming, tracked, inliers, reprojection, ms pyramid, flow,
-// pose, pointCount, (x, y)…
+// pose, turning, turnNormal (3), turnScore, pointCount, (x, y)…
 JNIEXPORT jdoubleArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeTrackerTrack (JNIEnv* env, jclass, jlong h, jint width, jint height) {
 	auto* T = reinterpret_cast<TrackerHandle*>(h);
 	TrackResult r = T->tracker.track({T->upright.data(), width, height, width * 4, PixelFormat::RGBA});
@@ -341,22 +341,23 @@ JNIEXPORT jdoubleArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeTrac
 	out.insert(out.end(), r.pose.R.begin(), r.pose.R.end());
 	out.insert(out.end(), r.pose.t.begin(), r.pose.t.end());
 	out.insert(out.end(), {double(r.renaming), double(r.tracked), double(r.inliers), r.reprojection, r.msPyramid, r.msFlow, r.msPose,
-		double(r.points.size())});
+		double(r.turning), r.turnNormal[0], r.turnNormal[1], r.turnNormal[2], r.turnScore, double(r.points.size())});
 	for (const auto& p : r.points)
 		out.insert(out.end(), {double(p[0]), double(p[1])});
 	return toArray(env, out);
 }
 
-// Facelet quads of a pose (R 9, t 3) for drawing: per R U F facelet (view frame) facelet, then 4 corners (8).
+// Facelet quads of a pose (R 9, t 3) for drawing: per R U F facelet (view frame) facelet, then 4 corners (8);
+// sampleSize: share of the sticker's side.
 JNIEXPORT jdoubleArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeProjectFacelets (JNIEnv* env, jclass, jint width, jint height,
-	jdouble fx, jdoubleArray pose) {
+	jdouble fx, jdoubleArray pose, jdouble sampleSize) {
 	jdouble* p = env->GetDoubleArrayElements(pose, nullptr);
 	Pose q;
 	std::copy(p, p + 9, q.R.begin());
 	std::copy(p + 9, p + 12, q.t.begin());
 	env->ReleaseDoubleArrayElements(pose, p, JNI_ABORT);
 	std::vector<double> out;
-	for (const auto& [k, quad] : projectFacelets({fx, fx, width / 2.0, height / 2.0}, q)) {
+	for (const auto& [k, quad] : projectFacelets({fx, fx, width / 2.0, height / 2.0}, q, sampleSize)) {
 		out.push_back(k);
 		out.insert(out.end(), quad.begin(), quad.end());
 	}

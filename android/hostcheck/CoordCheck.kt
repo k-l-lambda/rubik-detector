@@ -10,6 +10,7 @@ import com.klstudio.rubikdetector.Cube
 import com.klstudio.rubikdetector.Detector
 import com.klstudio.rubikdetector.Hud
 import com.klstudio.rubikdetector.HudMode
+import com.klstudio.rubikdetector.MiniCube
 import com.klstudio.rubikdetector.Snapshot
 import java.awt.BasicStroke
 import java.awt.Color
@@ -75,6 +76,10 @@ private fun centreError(Ra: DoubleArray, ta: DoubleArray, Rb: DoubleArray, tb: D
 	return d.average() / pitch
 }
 
+// per view the true rotation (labels.json views: "rotation" before "translation")
+private fun parseViews(text: String): List<DoubleArray> =
+	Regex("\"rotation\":\\s*\\[([^\\]]*)\\],\\s*\"translation\"").findAll(text).map { m -> m.groupValues[1].split(",").map { it.trim().toDouble() }.toDoubleArray() }.toList()
+
 private fun pct(v: List<Double>, q: Double) = if (v.isEmpty()) Double.NaN else v.sorted()[minOf(v.size - 1, (q * v.size).toInt())]
 
 fun main(args: Array<String>) {
@@ -94,6 +99,7 @@ fun main(args: Array<String>) {
 	System.getenv("RING")?.toIntOrNull()?.let { ts.ring = it }
 	System.getenv("BLEND")?.toDoubleOrNull()?.let { ts.blend = it }
 	System.getenv("CATCHUP")?.toIntOrNull()?.let { ts.catchUpSteps = it }
+	System.getenv("HINT")?.let { ts.hints = it != "0" }
 	val coord = Coordinator(ts)
 	System.getenv("WORK_WIDTH")?.toIntOrNull()?.let { coord.pipeline.settings.workWidth = it }
 	fxGiven?.let { coord.pipeline.useFocal(it) }
@@ -218,21 +224,31 @@ fun main(args: Array<String>) {
 			val g = img.createGraphics()
 			g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
 			g.drawImage(src, 0, 0, img.width, img.height, null)
+			// at the cube: only the tracked points (magenta; yellow while a layer turns)
 			if (tracked && hud != null) {
-				hud.quads.forEachIndexed { q, (_, quad) ->
-					val xs = IntArray(4) { (quad[2 * it] * outScale).toInt() }
-					val ys = IntArray(4) { (quad[2 * it + 1] * outScale).toInt() }
-					val c = hud.colours.getOrElse(q) { 0 }
-					if (c != 0) {
-						g.color = Color((c shr 16) and 0xff, (c shr 8) and 0xff, c and 0xff, 150)
-						g.fillPolygon(xs, ys, 4)
+				g.color = if (hud.turning) Color(255, 220, 0) else Color(255, 0, 255)
+				hud.track?.points?.forEach { p -> g.fillOval((p[0] * outScale - 2).toInt(), (p[1] * outScale - 2).toInt(), 5, 5) }
+			}
+			// bottom right: the reconstructed cube
+			if (hud != null) {
+				val size = img.width * 0.36
+				val cx = img.width - size / 2 - 8
+				val cy = img.height - size / 2 - 8
+				val k = size / 5.4
+				g.color = Color(20, 20, 20, 170)
+				g.fillRoundRect((cx - size / 2).toInt(), (cy - size / 2).toInt(), size.toInt(), size.toInt(), 12, 12)
+				for (poly in MiniCube.polygons(hud.mini)) {
+					val xs = IntArray(4) { (cx + poly.points[2 * it] * k).toInt() }
+					val ys = IntArray(4) { (cy + poly.points[2 * it + 1] * k).toInt() }
+					val c = poly.argb
+					g.color = Color((c shr 16) and 0xff, (c shr 8) and 0xff, c and 0xff)
+					g.fillPolygon(xs, ys, 4)
+					if (poly.outline) {
+						g.color = Color(0, 0, 0)
+						g.stroke = BasicStroke(1f)
+						g.drawPolygon(xs, ys, 4)
 					}
-					g.color = Color.WHITE
-					g.stroke = BasicStroke(1.5f)
-					g.drawPolygon(xs, ys, 4)
 				}
-				g.color = Color(255, 0, 255)
-				hud.track?.points?.forEach { p -> g.fillOval((p[0] * outScale - 2).toInt(), (p[1] * outScale - 2).toInt(), 4, 4) }
 			}
 			g.font = Font(Font.MONOSPACED, Font.BOLD, 13)
 			val lines = listOf(
@@ -243,6 +259,8 @@ fun main(args: Array<String>) {
 					HudMode.NONE -> "no cube yet"
 				},
 				if (hud?.snapshot != null) String.format("detection age %.0f ms  stage %s  presence %.2f", hud.detectionAge * 1000, hud.snapshot.stage, hud.snapshot.presence) else "",
+				hud?.stateText ?: "",
+				if (hud?.turning == true) "layer turning" else "",
 				hud?.events?.lastOrNull() ?: "",
 			)
 			lines.forEachIndexed { k, line ->
@@ -267,6 +285,90 @@ fun main(args: Array<String>) {
 	for ((ph, e) in byPhase.toSortedMap())
 		println(String.format("  displayed during %-8s: error median %.3f p90 %.3f (%d)", ph, pct(e, 0.5), pct(e, 0.9), e.size))
 	println("  stats: " + coord.stats.toSortedMap())
+	// the follower against the true twists (a render's labels): delay from the twist's end to the switch, right or not
+	if (labelFile.exists()) {
+		val text = labelFile.readText()
+		val video = text.substring(text.lastIndexOf("\"twists\""))
+		val twists = Regex("\"move\":\\s*\"([^\"]+)\"[\\s\\S]*?\"twist\":\\s*\\[\\s*(\\d+),\\s*(\\d+)").findAll(video)
+			.map { Triple(it.groupValues[1], it.groupValues[2].toInt(), it.groupValues[3].toInt()) }.toList()
+		val truth = Regex("\"facelets\":\\s*\"([LRDUBF]{54})\"").findAll(text).map { it.groupValues[1] }.toList()
+		val switches = ArrayList<Triple<Double, Long, Snapshot>>()
+		var prev = 0
+		for (d in detections) {
+			val f = d.third.follow ?: continue
+			if (f.moves.size > prev)
+				switches.add(d)
+			prev = f.moves.size
+		}
+		val right = { d: Triple<Double, Long, Snapshot> -> truth.getOrNull(1 + d.second.toInt())?.let { Cube.faceMap(d.third.follow!!.state, it) != null } ?: false }
+		val delays = ArrayList<Double>()
+		for ((move, start, end) in twists) {
+			val sw = switches.firstOrNull { it.second >= start && right(it) }
+			if (sw == null)
+				println(String.format("  twist %-3s ended %.2f s: not followed", move, end / fps))
+			else {
+				delays.add((sw.first - end / fps) * 1000)
+				println(String.format("  twist %-3s ended %.2f s: followed %+.0f ms later%s", move, end / fps, (sw.first - end / fps) * 1000,
+					if (sw.third.follow!!.hinted) " (turn seen)" else ""))
+			}
+		}
+		println(String.format("  follow delay after the twist ends: median %.0f ms, max %.0f; wrong switches %d of %d",
+			pct(delays, 0.5), delays.maxOrNull() ?: Double.NaN, switches.count { !right(it) }, switches.size))
+	}
+	// the mini cube's letters against the true state (a render's labels), at the frame's visible facelets
+	if (labelFile.exists()) {
+		val text = labelFile.readText()
+		val truthFacelets = Regex("\"facelets\":\\s*\"([LRDUBF]{54})\"").findAll(text).map { it.groupValues[1] }.toList()
+		val views = parseViews(text)
+		val votes = HashMap<Pair<Char, Char>, Int>()
+		class Row(val stage: String, val pairs: List<Pair<Char, Char>>)
+		// frames from a twist's start to 1.5 s after its end: the follower is expected behind there
+		val twistSpans = Regex("\"twist\":\\s*\\[\\s*(\\d+),\\s*(\\d+)\\s*\\]").findAll(text.substring(text.lastIndexOf("\"twists\"")))
+			.map { Pair(it.groupValues[1].toInt(), it.groupValues[2].toInt()) }.toList()
+		val nearTwist = { i: Int -> twistSpans.any { (a, b) -> i >= a && i < b + (1.5 * fps).toInt() } }
+		val rows = ArrayList<Row>()
+		for ((_, h) in huds) {
+			val L = h.mini.letters ?: continue
+			val R = h.R ?: continue
+			val v = views.getOrNull(h.index.toInt()) ?: continue
+			val truth = truthFacelets.getOrNull(1 + h.index.toInt()) ?: continue
+			val (_, g) = Cube.frameMatch(R, v)
+			val inv = IntArray(54)
+			Cube.perms[g].forEachIndexed { a2, b -> inv[b] = a2 }
+			// the faces turned to the camera: view facelets 9–17 (R), 27–35 (U), 45–53 (F)
+			// truth's facelet k is the view's facelet perms[g][k]: the view's facelet j is truth's inv[j]
+			val pairs = (listOf(9, 27, 45).flatMap { f -> (f until f + 9) }).map { j -> Pair(L[j], truth[inv[j]]) }.filter { it.first != '?' }
+			pairs.forEach { votes.merge(it, 1, Int::plus) }
+			rows.add(Row((h.snapshot?.stage?.toString() ?: "-") + if (nearTwist(h.index.toInt())) " near a twist" else "", pairs))
+		}
+		val bij = votes.entries.groupBy { it.key.first }.mapValues { (_, e) -> e.maxByOrNull { it.value }!!.key.second }
+		// FOLLOW frames away from twists with a wrong facelet: when, and whether the follower's own state was right then
+		val bad = ArrayList<String>()
+		for ((_, h) in huds) {
+			val L = h.mini.letters ?: continue
+			val R = h.R ?: continue
+			if (h.snapshot?.stage?.toString() != "FOLLOW" || nearTwist(h.index.toInt()))
+				continue
+			val v = views.getOrNull(h.index.toInt()) ?: continue
+			val truth = truthFacelets.getOrNull(1 + h.index.toInt()) ?: continue
+			val (_, g) = Cube.frameMatch(R, v)
+			val inv = IntArray(54)
+			Cube.perms[g].forEachIndexed { a2, b -> inv[b] = a2 }
+			val wrong = listOf(9, 27, 45).flatMap { f -> (f until f + 9) }.count { j -> L[j] != '?' && bij[L[j]] != truth[inv[j]] }
+			if (wrong > 0) {
+				val followRight = Cube.faceMap(h.snapshot!!.follow!!.state, truth) != null
+				bad.add(String.format("%.1fs:%d%s", h.time, wrong, if (followRight) "" else "(state wrong)"))
+			}
+		}
+		println("  FOLLOW frames away from twists with wrong facelets (time:count): " + bad.take(40).joinToString(" "))
+		for (stage in rows.map { it.stage }.distinct()) {
+			val rs = rows.filter { it.stage == stage }
+			val all = rs.sumOf { it.pairs.size }
+			val ok = rs.sumOf { r -> r.pairs.count { bij[it.first] == it.second } }
+			val perfect = rs.count { r -> r.pairs.all { bij[it.first] == it.second } }
+			println(String.format("  mini cube vs the true state (%s): facelets %d/%d (%.0f%%), frames all right %d/%d", stage, ok, all, 100.0 * ok / maxOf(1, all), perfect, rs.size))
+		}
+	}
 	val filled = huds.filter { it.second.mode == HudMode.TRACKED }.map { h -> h.second.colours.count { it != 0 } }
 	println("  colours filled per tracked HUD: " + filled.groupingBy { it }.eachCount().toSortedMap())
 	// the first seconds: where the track came from

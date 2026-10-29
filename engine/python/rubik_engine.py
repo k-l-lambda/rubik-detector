@@ -234,7 +234,9 @@ def conflicts(model, view, rotation, state, threshold=4.0):
 class TrackResult(ctypes.Structure):
 	_fields_ = [("ok", ctypes.c_int32), ("error", ctypes.c_char * 96), ("pose", ctypes.c_double * 12), ("renaming", ctypes.c_int32), ("tracked", ctypes.c_int32),
 		("inliers", ctypes.c_int32), ("reprojection", ctypes.c_double), ("ms_pyramid", ctypes.c_double), ("ms_flow", ctypes.c_double),
-		("ms_pose", ctypes.c_double), ("point_count", ctypes.c_int32), ("points", (ctypes.c_float * 2) * 64)]
+		("ms_pose", ctypes.c_double), ("point_count", ctypes.c_int32), ("points", (ctypes.c_float * 2) * 64),
+		("turning", ctypes.c_int32), ("turn_normal", ctypes.c_double * 3), ("turn_score", ctypes.c_double), ("turn_in", ctypes.c_double),
+		("turn_out", ctypes.c_double)]
 
 
 _lib.rk_tracker_new.restype = ctypes.c_void_p
@@ -268,7 +270,8 @@ class Tracker:
 		_lib.rk_tracker_track(self._t, img.ctypes.data, img.shape[1], img.shape[0], img.strides[0], 0, ctypes.byref(r))
 		return {"ok": bool(r.ok), "error": r.error.decode(), "R": np.array(r.pose[:9]).reshape(3, 3), "t": np.array(r.pose[9:]),
 			"renaming": r.renaming, "tracked": r.tracked, "inliers": r.inliers, "reprojection": r.reprojection,
-			"ms": {"pyramid": r.ms_pyramid, "flow": r.ms_flow, "pose": r.ms_pose}, "points": np.array(r.points[:r.point_count])}
+			"ms": {"pyramid": r.ms_pyramid, "flow": r.ms_flow, "pose": r.ms_pose}, "points": np.array(r.points[:r.point_count]),
+			"turning": bool(r.turning), "turn_normal": np.array(r.turn_normal), "turn_score": r.turn_score, "turn_in": r.turn_in, "turn_out": r.turn_out}
 
 
 def apply_moves(state, moves):

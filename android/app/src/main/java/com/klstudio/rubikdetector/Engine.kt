@@ -93,11 +93,11 @@ object Engine {
 	@JvmStatic external fun nativeTrackerTrack(handle: Long, width: Int, height: Int): DoubleArray
 	@JvmStatic external fun nativeTrackerReseed(handle: Long, pose: DoubleArray): Boolean
 	@JvmStatic external fun nativeTrackerReset(handle: Long)
-	@JvmStatic external fun nativeProjectFacelets(width: Int, height: Int, fx: Double, pose: DoubleArray): DoubleArray
+	@JvmStatic external fun nativeProjectFacelets(width: Int, height: Int, fx: Double, pose: DoubleArray, sampleSize: Double): DoubleArray
 
-	// per R U F facelet of a pose (view frame), its sampled-part quad in pixels
-	fun projectFacelets(frame: FrameInfo, fx: Double, R: DoubleArray, t: DoubleArray): List<Pair<Int, FloatArray>> {
-		val o = nativeProjectFacelets(frame.width, frame.height, fx, R + t)
+	// per R U F facelet of a pose (view frame), its quad (sampleSize of the sticker's side) in pixels
+	fun projectFacelets(frame: FrameInfo, fx: Double, R: DoubleArray, t: DoubleArray, sampleSize: Double = 0.46): List<Pair<Int, FloatArray>> {
+		val o = nativeProjectFacelets(frame.width, frame.height, fx, R + t, sampleSize)
 		return List(o.size / 9) { i -> Pair(o[i * 9].toInt(), FloatArray(8) { o[i * 9 + 1 + it].toFloat() }) }
 	}
 
@@ -142,6 +142,9 @@ class Track(
 	val reprojection: Double,
 	val ms: DoubleArray,            // pyramid, flow, pose
 	val points: List<FloatArray>,
+	val turning: Boolean,           // a layer's points don't follow the rigid pose (TrackResult turning-layer signal)
+	val turnNormal: DoubleArray,    // that layer's face, outward normal, camera frame
+	val turnScore: Double,
 )
 
 // The engine's FrameTracker (its own thread, own frame buffer): seed with a detected frame, then track every frame.
@@ -162,9 +165,10 @@ class Tracker : AutoCloseable {
 
 	fun track(frame: FrameInfo): Track {
 		val o = Engine.nativeTrackerTrack(handle, frame.width, frame.height)
-		val n = o[20].toInt()
+		val n = o[25].toInt()
 		return Track(o[0] != 0.0, o.copyOfRange(1, 10), o.copyOfRange(10, 13), o[13].toInt(), o[14].toInt(), o[15].toInt(), o[16],
-			o.copyOfRange(17, 20), List(n) { floatArrayOf(o[21 + 2 * it].toFloat(), o[22 + 2 * it].toFloat()) })
+			o.copyOfRange(17, 20), List(n) { floatArrayOf(o[26 + 2 * it].toFloat(), o[27 + 2 * it].toFloat()) },
+			o[20] != 0.0, o.copyOfRange(21, 24), o[24])
 	}
 
 	override fun close() {

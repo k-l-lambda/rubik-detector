@@ -54,6 +54,24 @@ On the real video the track is lost under the hand and in blur (~10 times in 36 
 (~0.8 s) often comes too late to catch up from; the tracked HUD is then far better where it is shown, the detection
 alone everywhere stale. Not verified on a device: CameraSession.kt / MainActivity.kt changes are not compiled here.
 
+## Turn signal and the reconstructed cube
+
+The tracker reports which outer layer's points stop fitting the rigid pose (`TrackResult::turning`, the face's
+normal in the camera frame): no layer pose is estimated, it is evidence. On v103 the right face on 91 % of twist
+frames, from the first 1–9 % of each turn; none during holds; false ones in whole-cube turns (27 % of those frames)
+and on the real video (16 %), mostly single frames — 3 frames in a row on one face keep all 8 twists and leave 5 / 14
+false runs. Such a run is a hint passed with the detection to the follower: turns of that face lose 8 nll of the turn
+prior and switch on one frame. v103: 7 of 8 switches hinted, no wrong switch (without hints one run had 2 wrong and an
+L2 followed 3.4 s late; the delay after a twist ends is otherwise similar, ~0.55–0.7 s: the detection after the turn).
+
+HUD: at the cube only the tracked points (yellow while a layer turns); bottom right the reconstructed cube at the
+tracked orientation — per facelet the state's colour, its saturation the confidence (grey: none); a turn the follower
+takes is played on it (the layer turned through 0.35 s, a half turn 1.6×; `hostcheck/MiniCubeCheck.kt`: the
+animation's end = `applyMoves` on all 18 turns). The view → state facelet map is carried frame to frame (a direct
+renaming across a whole-cube turn was wrong); on v103 the shown facelets are the true state on every following frame
+away from twists. The text gives the state's confidence (Π of the facelet confidences, the minimum, coverage; locked:
+at the lock, and the follower's last decision).
+
 ## Cube presence
 
 Every frame is first asked whether there is a cube at all: the engine's presence score of the detection (line
