@@ -81,7 +81,9 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun DetectorScreen(session: CameraSession, owner: androidx.lifecycle.LifecycleOwner) {
 	val snapshot by session.snapshots.collectAsState()
+	val hud by session.huds.collectAsState()
 	val stats by session.stats.collectAsState()
+	var tracking by remember { mutableStateOf(session.tracking) }
 	var showSegments by remember { mutableStateOf(false) }
 	var showSamples by remember { mutableStateOf(true) }
 	var showAxes by remember { mutableStateOf(true) }
@@ -99,14 +101,23 @@ fun DetectorScreen(session: CameraSession, owner: androidx.lifecycle.LifecycleOw
 				}
 			}, modifier = Modifier.fillMaxSize())
 			Canvas(Modifier.fillMaxSize()) {
-				val s = snapshot ?: return@Canvas
-				drawDetection(s, showSegments, showSamples, showAxes)
+				val s = snapshot
+				val h = hud
+				if (tracking && h != null && h.mode == HudMode.TRACKED) {
+					// the tracked pose every frame; the detection's segments under it if asked
+					if (s != null && showSegments)
+						drawDetection(s, true, false, false)
+					drawTracked(h, showSamples, showAxes, s?.fx ?: 0.0)
+				}
+				else if (s != null)
+					// no track: the last detection, dimmed while tracking is on (it is that old)
+					drawDetection(s, showSegments, showSamples, showAxes, if (tracking) 0.45f else 1f)
 			}
 			snapshot?.let { s ->
 				Box(Modifier.align(Alignment.TopEnd).padding(6.dp).background(Color(0xb0101010)).padding(4.dp)) {
 					CubeNet(s.net, Modifier.width(150.dp).aspectRatio(4f / 3f))
 				}
-				Text(headline(s), color = Color.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace,
+				Text((if (tracking) trackHeadline(hud) + "\n" else "") + headline(s), color = Color.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace,
 					modifier = Modifier.align(Alignment.TopStart).padding(6.dp).background(Color(0x90000000)).padding(4.dp))
 			}
 		}
@@ -125,8 +136,9 @@ fun DetectorScreen(session: CameraSession, owner: androidx.lifecycle.LifecycleOw
 			FilterChip(selected = showSamples, onClick = { showSamples = !showSamples }, label = { Text("stickers") })
 			FilterChip(selected = showSegments, onClick = { showSegments = !showSegments }, label = { Text("segments") })
 			FilterChip(selected = showAxes, onClick = { showAxes = !showAxes }, label = { Text("axes") })
+			FilterChip(selected = tracking, onClick = { tracking = !tracking; session.tracking = tracking }, label = { Text("track") })
 		}
-		Text(snapshot?.let { describe(it, stats) } ?: "waiting for the camera…",
+		Text((if (tracking) describeTrack(hud) else "") + (snapshot?.let { describe(it, stats) } ?: "waiting for the camera…"),
 			color = Color(0xffd0d0d0), fontSize = 11.sp, fontFamily = FontFamily.Monospace, lineHeight = 13.sp,
 			modifier = Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(6.dp))
 	}
@@ -159,7 +171,63 @@ private fun DrawScope.mapping(frame: FrameInfo): Mapping {
 
 private val FAMILY = listOf(Color(0xffff4040), Color(0xff40ff40), Color(0xff4080ff))
 
-fun DrawScope.drawDetection(s: Snapshot, segments: Boolean, samples: Boolean, axes: Boolean) {
+fun trackHeadline(h: Hud?): String = when (h?.mode) {
+	null, HudMode.NONE -> "no track yet"
+	HudMode.LOST -> "track lost: waiting for a detection"
+	HudMode.TRACKED -> String.format("TRACKED %d pts %.1f px  detection %.0f ms ago", h.track!!.inliers, h.track.reprojection, h.detectionAge * 1000)
+}
+
+fun describeTrack(h: Hud?): String = buildString {
+	if (h == null)
+		return@buildString
+	val tr = h.track
+	appendLine(String.format("track %s  frame %d  tracker thread %.1f ms (applying detections %.1f)", h.mode, h.index, h.msTrack, h.msApply))
+	if (tr != null)
+		appendLine(String.format("  %d points followed, %d inliers, reprojection %.2f px; ms pyramid %.1f flow %.1f pose %.2f",
+			tr.tracked, tr.inliers, tr.reprojection, tr.ms[0], tr.ms[1], tr.ms[2]))
+	if (!h.detectionAge.isNaN())
+		appendLine(String.format("  last detection applied %.0f ms ago", h.detectionAge * 1000))
+	if (h.events.isNotEmpty()) {
+		appendLine("track events:")
+		h.events.reversed().take(6).forEach { appendLine("  $it") }
+	}
+	appendLine()
+}
+
+// the tracked pose: its facelet quads in the last detection's colours, the tracked points, the axes
+fun DrawScope.drawTracked(h: Hud, samples: Boolean, axes: Boolean, fx: Double) {
+	val m = mapping(h.frame)
+	if (samples)
+		h.quads.forEachIndexed { q, (_, quad) ->
+			val path = Path().apply {
+				val p0 = m.map(quad[0], quad[1])
+				moveTo(p0.x, p0.y)
+				for (i in 1 until 4) {
+					val p = m.map(quad[2 * i], quad[2 * i + 1])
+					lineTo(p.x, p.y)
+				}
+				close()
+			}
+			val c = h.colours.getOrElse(q) { 0 }
+			if (c != 0)
+				drawPath(path, Color(c).copy(alpha = 0.6f))
+			drawPath(path, Color.White, style = Stroke(width = 2f))
+		}
+	h.track?.points?.forEach { p -> drawCircle(Color(0xffff40ff), 3f, m.map(p[0], p[1])) }
+	val R = h.R
+	val t = h.t
+	if (axes && R != null && t != null && fx > 0) {
+		val project = { p: DoubleArray -> m.map((fx * p[0] / p[2] + h.frame.width / 2.0).toFloat(), (fx * p[1] / p[2] + h.frame.height / 2.0).toFloat()) }
+		val o = project(t)
+		for (a in 0 until 3) {
+			val e = DoubleArray(3) { t[it] + 1.5 * R[it * 3 + a] }
+			if (e[2] > 0)
+				drawLine(FAMILY[a], o, project(e), strokeWidth = 4f)
+		}
+	}
+}
+
+fun DrawScope.drawDetection(s: Snapshot, segments: Boolean, samples: Boolean, axes: Boolean, alpha: Float = 1f) {
 	val d = s.detection ?: return
 	val m = mapping(s.frame)
 	if (segments)
@@ -184,8 +252,8 @@ fun DrawScope.drawDetection(s: Snapshot, segments: Boolean, samples: Boolean, ax
 				}
 				close()
 			}
-			drawPath(path, Color(Colors.labToArgb(smp.lab)).copy(alpha = 0.6f))
-			drawPath(path, outline, style = Stroke(width = 2f))
+			drawPath(path, Color(Colors.labToArgb(smp.lab)).copy(alpha = 0.6f * alpha))
+			drawPath(path, outline.copy(alpha = alpha), style = Stroke(width = 2f))
 		}
 	if (axes) {
 		// the cube's axes from its centre (view frame: x red, y green, z blue), 1.5 cubies long

@@ -334,5 +334,19 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 			if (lastFitTime.isNaN()) Double.NaN else time - lastFitTime, lastSnapshot, ms, msApply, evs)
 	}
 
+	// tracker thread: drop the track and what it was seeded from (a reset of the app)
+	fun resetTrack() {
+		seeded = false
+		everTracked = false
+		lastFit = null
+		lastFitTime = Double.NaN
+		lastSnapshot = null
+		noCube = 0
+		disagreements = 0
+		tracker.reset()
+		synchronized(history) { history.clear() }
+		synchronized(outcomes) { outcomes.clear() }
+	}
+
 	fun close() = tracker.close()
 }

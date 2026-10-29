@@ -1,5 +1,7 @@
-// CameraX: preview + RGBA analysis frames (keep-only-latest: the pipeline takes the newest frame whenever it is
-// free) on one worker thread that owns the Detector and the Pipeline. Publishes a Snapshot per processed frame.
+// CameraX: preview + RGBA analysis frames (keep-only-latest). Tracking on (default): every analysis frame goes to
+// the Coordinator's tracker on the analysis thread (a few ms; publishes a Hud per frame), and a second thread detects
+// in the background on the newest frame whenever it is free (publishes a Snapshot per detection). Tracking off: the
+// detection pipeline alone on the analysis thread, as before (one Snapshot per processed frame).
 package com.klstudio.rubikdetector
 
 import android.content.Context
@@ -58,16 +60,25 @@ class Stats(
 
 class CameraSession(private val context: Context) {
 	val snapshots = MutableStateFlow<Snapshot?>(null)
+	val huds = MutableStateFlow<Hud?>(null)
 	val stats = MutableStateFlow(Stats())
-	val pipeline = Pipeline()
+	val coordinator = Coordinator()
+	val pipeline get() = coordinator.pipeline
+	@Volatile var tracking = true
 
 	@Volatile var frozen = false
 	@Volatile var useCameraFocal = false
 	@Volatile private var resetRequest: Boolean? = null   // keep the focal length?
+	@Volatile private var pipelineReset: Boolean? = null  // tracking: the reset for the detector thread
 	@Volatile private var dumpRequested = false
 
 	private val worker = Executors.newSingleThreadExecutor()
-	private var detector: Detector? = null
+	private val detectorThread = Executors.newSingleThreadExecutor()
+	private var detector: Detector? = null           // the analysis thread's (tracking off)
+	private var backgroundDetector: Detector? = null // the detector thread's (tracking on)
+	private val detecting = java.util.concurrent.atomic.AtomicBoolean(false)
+	@Volatile private var newest = -1L               // the newest frame pushed to the coordinator
+	private var frameIndex = 0L
 	private var intrinsics: Intrinsics? = null
 	private var lastTimestamp = 0L
 	private var lastProcessed = 0L
@@ -126,9 +137,20 @@ class CameraSession(private val context: Context) {
 				return
 			resetRequest?.let { keep ->
 				resetRequest = null
-				pipeline.reset(keep)
-				if (!keep)
-					pipeline.fx = 0.0
+				if (tracking) {
+					// the pipeline belongs to the detector thread: it resets it before its next detection
+					coordinator.resetTrack()
+					pipelineReset = keep
+				}
+				else {
+					pipeline.reset(keep)
+					if (!keep)
+						pipeline.fx = 0.0
+				}
+			}
+			if (tracking) {
+				analyzeTracking(image)
+				return
 			}
 			val started = System.nanoTime()
 			val det = detector ?: Detector().also { detector = it }
@@ -170,6 +192,73 @@ class CameraSession(private val context: Context) {
 		}
 	}
 
+	// tracker thread: the frame into the coordinator's ring, tracked; a detection started on it if the detector is free
+	private fun analyzeTracking(image: ImageProxy) {
+		val started = System.nanoTime()
+		val plane = image.planes[0]
+		val index = frameIndex++
+		coordinator.push(plane.buffer, image.width, image.height, plane.rowStride, image.imageInfo.rotationDegrees, image.imageInfo.timestamp / 1e9, index)
+		val hud = coordinator.trackStep(index)
+		newest = index
+		if (detecting.compareAndSet(false, true))
+			detectorThread.execute { detectLoop() }
+		val now = System.nanoTime()
+		val processedFps = if (lastProcessed != 0L) 1e9 / (now - lastProcessed) else 0.0
+		lastProcessed = now
+		val cameraFx = hud?.let { intrinsics?.fx(maxOf(it.frame.width, it.frame.height)) }
+		var dumped: String? = stats.value.dumped
+		if (dumpRequested) {
+			dumpRequested = false
+			snapshots.value?.let { dumped = save(image, image.imageInfo.rotationDegrees, it) }
+		}
+		stats.value = Stats(
+			analysisSize = Size(image.width, image.height),
+			rotation = image.imageInfo.rotationDegrees,
+			processedFps = processedFps,
+			cameraFramesPerProcessed = if (frameInterval > 0 && processedFps > 0) 1e9 / frameInterval / processedFps else 0.0,
+			ageMs = (SystemClock.elapsedRealtimeNanos() - image.imageInfo.timestamp) / 1e6,
+			convertMs = hud?.frame?.ms ?: 0.0,
+			totalMs = (now - started) / 1e6,
+			cameraFx = cameraFx,
+			intrinsics = intrinsics?.describe() ?: "",
+			dumped = dumped,
+		)
+		huds.value = hud
+	}
+
+	// detector thread: detections on the newest pushed frame until there is no newer one
+	private fun detectLoop() {
+		try {
+			val det = backgroundDetector ?: Detector().also { backgroundDetector = it }
+			var done = -1L
+			while (tracking && !frozen) {
+				val index = newest
+				if (index <= done)
+					break
+				pipelineReset?.let { keep ->
+					pipelineReset = null
+					pipeline.reset(keep)
+					if (!keep)
+						pipeline.fx = 0.0
+				}
+				if (useCameraFocal && pipeline.stage == Stage.FOCAL)
+					stats.value.cameraFx?.let { pipeline.useFocal(it) }
+				val snapshot = coordinator.detectStep(det, index)
+				done = index
+				if (snapshot != null) {
+					coordinator.post(index, snapshot)
+					snapshots.value = snapshot
+				}
+			}
+		}
+		catch (e: Throwable) {
+			Log.e("RubikDetector", "detection failed", e)
+		}
+		finally {
+			detecting.set(false)
+		}
+	}
+
 	// the frame (upright PNG) and what the pipeline made of it (text) under the app's external files, for offline
 	// runs of the Python tools
 	private fun save(image: ImageProxy, rotation: Int, s: Snapshot): String {
@@ -188,9 +277,16 @@ class CameraSession(private val context: Context) {
 	}
 
 	fun close() {
+		tracking = false
+		detectorThread.execute {
+			backgroundDetector?.close()
+			backgroundDetector = null
+		}
+		detectorThread.shutdown()
 		worker.execute {
 			detector?.close()
 			detector = null
+			coordinator.close()
 		}
 		worker.shutdown()
 	}
