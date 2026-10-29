@@ -15,6 +15,7 @@ apps. The Python package stays the reference; `tools/parity.py` checks the engin
 	tools/api_check.py         tracking / renamed frames / turn scoring on the samples
 	tools/focal_check.py       focal length estimation vs the samples' true K
 	tools/presence_check.py    cube-presence score on positives (video, photos) and generated negatives
+	tools/track_check.py       FrameTracker against per-frame reference poses (real video detections or render labels)
 	tools/real_video.py        per-frame detection on a real (unlabelled) video, overlays and cost / extent statistics
 	tools/hud_video.py         a detection HUD on a video, with the engine's real latency (× a phone factor)
 	tools/state_tracker.py     app-layer prototype on a camera stream: FOV → evidence of every frame → Bayesian colour
@@ -38,6 +39,8 @@ and the iterative searches amplify last-bit differences.
 | state, confidence, colour model | `estimateState(evidence)` | ~0.1 s |
 | video: per facelet colour posteriors, state from five faces | `estimateState(evidence, {.partial, .outlier})` | ~20 ms (60 frames) |
 | score candidate states for a view | `scoreStates(model, samples, rotation, states)` | < 1 ms each |
+| track between detections: lattice vertices by Lucas–Kanade + robust pose | `FrameTracker::seed`, `track` | ~19 ms at 720×1280 |
+| the pose with the faces turned to the camera as R U F | `facingPose` | — |
 | frame renaming / chaining | `relativeRotation`, `composeRotations`, `inverseRotation` | — |
 | moves | `parseTurn`, `applyTurn`, `applyMoves`, `faceTurnNames`, `compareStates` | — |
 

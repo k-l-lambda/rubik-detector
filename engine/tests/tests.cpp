@@ -238,6 +238,87 @@ int main () {
 		CHECK(std::abs(estimateState(grouped, options).posterior[13] - 7.0 / 12) < 1e-4);
 	}
 
+	// tracking: Lucas–Kanade recovers a sub-pixel shift of a textured image; the robust pose refinement recovers a pose
+	// from perturbed start with a fifth of the points outliers
+	{
+		const int W = 240, H = 200;
+		const double sx = 3.4, sy = -2.1;
+		auto pattern = [](double x, double y) {
+			return 128 + 50 * std::sin(0.21 * x + 0.4) * std::cos(0.17 * y) + 40 * std::exp(-((x - 120) * (x - 120) + (y - 90) * (y - 90)) / 800.0)
+				+ 25 * std::sin(0.09 * x * 0.7 + 0.13 * y);
+		};
+		std::vector<uint8_t> a(W * H * 3), b(W * H * 3);
+		for (int y = 0; y < H; y++)
+			for (int x = 0; x < W; x++) {
+				uint8_t va = uint8_t(std::lround(pattern(x, y))), vb = uint8_t(std::lround(pattern(x - sx, y - sy)));
+				for (int c = 0; c < 3; c++) {
+					a[(y * W + x) * 3 + c] = va;
+					b[(y * W + x) * 3 + c] = vb;
+				}
+			}
+		TrackOptions o;
+		GreyPyramid pa = buildPyramid({a.data(), W, H, 0, PixelFormat::BGR}, o.levels);
+		GreyPyramid pb = buildPyramid({b.data(), W, H, 0, PixelFormat::BGR}, o.levels);
+		double worst = 0;
+		for (float x : {60.f, 120.f, 170.f})
+			for (float y : {50.f, 100.f, 150.f}) {
+				float ox, oy;
+				bool ok = lucasKanade(pa, pb, x, y, ox, oy, o);
+				CHECK(ok);
+				if (ok)
+					worst = std::max(worst, std::hypot(ox - x - sx, oy - y - sy));
+			}
+		CHECK(worst < 0.1);
+
+		Intrinsics K{800, 800, 320, 240};
+		M3 R = rodrigues({0.4, -0.6, 0.2});
+		V3 t{0.3, -0.2, 11};
+		std::vector<V3> obj;
+		std::vector<std::array<double, 2>> img;
+		std::mt19937 rng(3);
+		std::uniform_real_distribution<double> u(-1.5, 1.5);
+		for (int i = 0; i < 40; i++) {
+			V3 p{u(rng), u(rng), 1.5};
+			V3 q = mul(R, p) + t;
+			obj.push_back(p);
+			img.push_back({K.fx * q.x / q.z + K.cx, K.fy * q.y / q.z + K.cy});
+			if (i % 5 == 0) {
+				img.back()[0] += 25;
+				img.back()[1] -= 18;
+			}
+		}
+		M3 R0 = matmul(rodrigues({0.03, -0.04, 0.02}), R);
+		V3 t0 = t + V3{0.25, -0.2, 0.4};
+		std::vector<bool> inl;
+		double med = 0;
+		bool ok = refinePose(K, obj, img, R0, t0, o, inl, med);
+		CHECK(ok);
+		double dR = 0;
+		for (int i = 0; i < 9; i++)
+			dR = std::max(dR, std::fabs(R0[i] - R[i]));
+		V3 dt = t0 - t;
+		CHECK(dR < 1e-6 && std::sqrt(dot(dt, dt)) < 1e-5 && med < 1e-6);
+		int outliers = 0;
+		for (int i = 0; i < 40; i++)
+			outliers += !inl[i];
+		CHECK(outliers == 8);
+	}
+
+	// facingPose: a cube turned so the camera is behind its −y face gets renamed so that all of R U F face the camera
+	{
+		Pose p;
+		M3 R = rodrigues({0.3, 0.2, 2.6});
+		std::copy(R.begin(), R.end(), p.R.begin());
+		p.t = {0.2, -0.1, 10};
+		int g = -1;
+		Pose f = facingPose(p, &g);
+		M3 Rf;
+		std::copy(f.R.begin(), f.R.end(), Rf.begin());
+		V3 c = -1 * mulT(Rf, {f.t[0], f.t[1], f.t[2]});
+		CHECK(g >= 0 && c.x > 0 && c.y > 0 && c.z > 0);
+		CHECK(std::fabs(det(Rf) - 1) < 1e-9);
+	}
+
 	std::printf(failures ? "%d failures\n" : "all engine unit tests passed\n", failures);
 	return failures ? 1 : 0;
 }

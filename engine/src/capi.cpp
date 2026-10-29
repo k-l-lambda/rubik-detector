@@ -453,6 +453,53 @@ int32_t rk_conflicts (const double mean[6][4], const double var[6][4], const rk_
 	}
 }
 
+struct rk_tracker {
+	FrameTracker tracker;
+};
+
+rk_tracker* rk_tracker_new (void) { return new rk_tracker; }
+void rk_tracker_free (rk_tracker* t) { delete t; }
+
+void rk_tracker_seed (rk_tracker* t, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format,
+	const double K[4], const double pose[12]) {
+	try {
+		Pose p;
+		std::copy(pose, pose + 9, p.R.begin());
+		std::copy(pose + 9, pose + 12, p.t.begin());
+		t->tracker.seed({data, width, height, stride, PixelFormat(format)}, {K[0], K[1], K[2], K[3]}, p);
+	}
+	catch (const std::exception&) {
+		t->tracker.reset();
+	}
+}
+
+void rk_tracker_track (rk_tracker* t, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format, rk_track_result* out) {
+	std::memset(out, 0, sizeof(*out));
+	try {
+		TrackResult r = t->tracker.track({data, width, height, stride, PixelFormat(format)});
+		out->ok = r.ok;
+		copyError(out->error, r.error);
+		std::copy(r.pose.R.begin(), r.pose.R.end(), out->pose);
+		std::copy(r.pose.t.begin(), r.pose.t.end(), out->pose + 9);
+		out->renaming = r.renaming;
+		out->tracked = r.tracked;
+		out->inliers = r.inliers;
+		out->reprojection = r.reprojection;
+		out->ms_pyramid = r.msPyramid;
+		out->ms_flow = r.msFlow;
+		out->ms_pose = r.msPose;
+		out->point_count = int32_t(std::min<size_t>(r.points.size(), 64));
+		for (int i = 0; i < out->point_count; i++) {
+			out->points[i][0] = r.points[i][0];
+			out->points[i][1] = r.points[i][1];
+		}
+	}
+	catch (const std::exception& e) {
+		out->ok = 0;
+		copyError(out->error, e.what());
+	}
+}
+
 int32_t rk_apply_moves (const char* state, const char* moves, char out[55]) {
 	try {
 		std::string r = applyMoves(state, moves);

@@ -50,8 +50,30 @@ def project(K, R, t, P):
 	return (K @ q.T).T[:, :2] / q[:, 2:3], q[:, 2]
 
 
+def facing(R, t):
+	"""the pose renamed so that the faces turned to the camera are +x, +y, +z (the view frame the sticker centres assume)"""
+	c = -R.T @ t
+	best = max((np.array(g) for g in _rotations()), key=lambda G: min(G.T @ c))
+	return R @ best
+
+
+def _rotations():
+	from itertools import permutations, product
+	out = []
+	for p in permutations(range(3)):
+		for s in product((-1, 1), repeat=3):
+			M = np.zeros((3, 3))
+			for i in range(3):
+				M[i, p[i]] = s[i]
+			if np.linalg.det(M) > 0:
+				out.append(M)
+	return out
+
+
 def centre_error(K, Ra, ta, Rb, tb):
-	"""mean distance between the two poses' visible sticker centres, matched, in units of the sticker pitch"""
+	"""mean distance between the two poses' visible sticker centres (each renamed to face the camera), matched, in
+	units of the sticker pitch"""
+	Ra, Rb = facing(Ra, ta), facing(Rb, tb)
 	C = sticker_centres()
 	pa, _ = project(K, Ra, ta, C)
 	pb, _ = project(K, Rb, tb, C)

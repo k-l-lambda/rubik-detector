@@ -14,7 +14,7 @@ add_compile_options(-ffp-contract=off)
 
 add_library(rubik_engine STATIC
 	src/capi.cpp src/classify.cpp src/cube.cpp src/engine.cpp src/geometry.cpp src/imaging.cpp
-	src/imgproc.cpp src/legal.cpp src/lsd.cpp src/state.cpp)
+	src/imgproc.cpp src/legal.cpp src/lsd.cpp src/state.cpp src/track.cpp)
 target_include_directories(rubik_engine PUBLIC include PRIVATE src)
 
 # shared library for ctypes (python/rubik_engine.py) and FFI

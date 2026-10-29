@@ -154,6 +154,29 @@ typedef struct {
 RK_API void rk_estimate_focal (rk_detector* detector, int32_t count, const uint8_t* const* data, int32_t width, int32_t height,
 	const int32_t* strides, int32_t format, const double hint[2], const double focal_range[2], const int32_t steps[4], rk_focal* out);
 
+// --- tracking between detections (FrameTracker) ---
+
+typedef struct rk_tracker rk_tracker;
+
+typedef struct {
+	int32_t ok;
+	char error[96];
+	double pose[12];         // R then t (facing: the faces turned to the camera are R U F)
+	int32_t renaming;        // TrackResult::renaming
+	int32_t tracked, inliers;
+	double reprojection;
+	double ms_pyramid, ms_flow, ms_pose;
+	int32_t point_count;
+	float points[64][2];
+} rk_track_result;
+
+RK_API rk_tracker* rk_tracker_new (void);
+RK_API void rk_tracker_free (rk_tracker* tracker);
+RK_API void rk_tracker_seed (rk_tracker* tracker, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format,
+	const double K[4], const double pose[12]);
+RK_API void rk_tracker_track (rk_tracker* tracker, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format,
+	rk_track_result* out);
+
 // 54-letter state after space-separated moves; returns 0 on bad input
 RK_API int32_t rk_apply_moves (const char* state, const char* moves, char out[55]);
 RK_API int32_t rk_compare_states (const char* pred, const char* truth);

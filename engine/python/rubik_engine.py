@@ -231,6 +231,46 @@ def conflicts(model, view, rotation, state, threshold=4.0):
 	return list(out[:n])
 
 
+class TrackResult(ctypes.Structure):
+	_fields_ = [("ok", ctypes.c_int32), ("error", ctypes.c_char * 96), ("pose", ctypes.c_double * 12), ("renaming", ctypes.c_int32), ("tracked", ctypes.c_int32),
+		("inliers", ctypes.c_int32), ("reprojection", ctypes.c_double), ("ms_pyramid", ctypes.c_double), ("ms_flow", ctypes.c_double),
+		("ms_pose", ctypes.c_double), ("point_count", ctypes.c_int32), ("points", (ctypes.c_float * 2) * 64)]
+
+
+_lib.rk_tracker_new.restype = ctypes.c_void_p
+_lib.rk_tracker_free.argtypes = [ctypes.c_void_p]
+_lib.rk_tracker_seed.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
+	ctypes.POINTER(ctypes.c_double * 4), ctypes.POINTER(ctypes.c_double * 12)]
+_lib.rk_tracker_track.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
+	ctypes.POINTER(TrackResult)]
+
+
+class Tracker:
+	"""FrameTracker: seed(image, K, R, t) with a detected frame, then track(image) every following frame."""
+
+	def __init__(self):
+		self._t = _lib.rk_tracker_new()
+
+	def __del__(self):
+		if getattr(self, "_t", None):
+			_lib.rk_tracker_free(self._t)
+			self._t = None
+
+	def seed(self, image_bgr, K, R, t):
+		img = np.ascontiguousarray(image_bgr, np.uint8)
+		k = (ctypes.c_double * 4)(K[0][0], K[1][1], K[0][2], K[1][2])
+		pose = (ctypes.c_double * 12)(*(list(np.asarray(R, float).ravel()) + list(np.asarray(t, float))))
+		_lib.rk_tracker_seed(self._t, img.ctypes.data, img.shape[1], img.shape[0], img.strides[0], 0, ctypes.byref(k), ctypes.byref(pose))
+
+	def track(self, image_bgr):
+		img = np.ascontiguousarray(image_bgr, np.uint8)
+		r = TrackResult()
+		_lib.rk_tracker_track(self._t, img.ctypes.data, img.shape[1], img.shape[0], img.strides[0], 0, ctypes.byref(r))
+		return {"ok": bool(r.ok), "error": r.error.decode(), "R": np.array(r.pose[:9]).reshape(3, 3), "t": np.array(r.pose[9:]),
+			"renaming": r.renaming, "tracked": r.tracked, "inliers": r.inliers, "reprojection": r.reprojection,
+			"ms": {"pyramid": r.ms_pyramid, "flow": r.ms_flow, "pose": r.ms_pose}, "points": np.array(r.points[:r.point_count])}
+
+
 def apply_moves(state, moves):
 	buf = ctypes.create_string_buffer(55)
 	if not _lib.rk_apply_moves(state.encode(), moves.encode(), buf):

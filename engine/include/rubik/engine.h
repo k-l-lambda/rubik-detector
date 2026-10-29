@@ -175,6 +175,65 @@ private:
 	std::unique_ptr<Scratch> scratch;
 };
 
+// --- tracking between detections --------------------------------------------------------------------------------
+
+struct TrackOptions {
+	int levels = 4;               // pyramid levels (each half the size)
+	int window = 21;              // Lucas–Kanade window, pixels (odd)
+	int iterations = 30;
+	float epsilon = 0.01f;        // stop when an update is below this (pixels)
+	double minEigen = 1e-3;       // smallest eigenvalue of the window's gradient matrix / its size: flat patches are lost
+	float forwardBackward = 1.0f; // forward then backward flow must return within this (pixels)
+	double robustScale = 3.0;     // Cauchy scale of the pose refinement (pixels)
+	int robustIterations = 10;
+	double inlierPixels = 4.0;    // reprojection error of an inlier
+	int minPoints = 6;            // fewer inliers: the track is lost
+	int topUpBelow = 24, topUpTo = 40;   // re-seed visible vertices from the tracked pose when the inliers fall below
+};
+
+struct TrackResult {
+	bool ok = false;
+	std::string error;
+	Pose pose;                    // input camera, renamed so the faces turned to the camera are R U F (facingPose)
+	int renaming = 0;             // the rotation g it was renamed by since seed(): pose.R = seedFrame.R · rotations()[g]
+	int tracked = 0;              // points followed by the flow (forward–backward consistent)
+	int inliers = 0;              // of them consistent with the pose
+	double reprojection = 0;      // median inlier reprojection error, pixels
+	std::vector<std::array<float, 2>> points;   // the points carried to the next frame (inliers, re-seeded ones), pixels
+	double msPyramid = 0, msFlow = 0, msPose = 0;
+};
+
+// Follows the cube from frame to frame between detections: seed() with a frame and its detected pose, then track()
+// every following frame (same size and camera). The visible lattice vertices (gap crossings of the faces turned to the
+// camera) are followed by pyramidal Lucas–Kanade with a forward–backward check, the pose refined from them by robust
+// Gauss–Newton from the previous one; inliers below topUpBelow are topped up with visible vertices at the new pose.
+// A few ms per frame where a detection takes 150–600: an app tracks every frame and detects in the background, re-
+// seeding from each detection. The pose is rigid: a turning layer's points are outliers (a turn shows as fewer
+// inliers). Not thread-safe; one per thread, independent of a Detector.
+class FrameTracker {
+public:
+	explicit FrameTracker (const TrackOptions& options = {});
+	~FrameTracker ();
+	FrameTracker (FrameTracker&&) noexcept;
+	FrameTracker& operator= (FrameTracker&&) noexcept;
+
+	void seed (const Image& image, const Camera& camera, const Pose& pose);
+	TrackResult track (const Image& image);
+	void reset ();
+	bool tracking () const;
+
+	TrackOptions options;
+
+private:
+	struct State;
+	std::unique_ptr<State> state;
+};
+
+// The pose renamed so that the faces turned to the camera are its R, U, F (the view frame sample() and detection
+// assume): a cube turned past a face edge keeps its frame otherwise. g: the rotation applied (pose.R · rotations()[g]);
+// of the renamings that do it, the one nearest `near` (a rotation index into the original frame, -1: any).
+Pose facingPose (const Pose& pose, int* g = nullptr, int near = -1);
+
 // Whole-cube rotations relate view frames: a view placed by rotation g puts its facelet k at facelet
 // rotationPerm(g)[k] of the common frame.
 //

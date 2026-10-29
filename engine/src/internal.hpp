@@ -25,6 +25,26 @@ struct Intrinsics {
 	double fx, fy, cx, cy;
 };
 
+// --- tracking (track.cpp) -----------------------------------------------------------------------------------------
+
+struct FloatImage {
+	int width = 0, height = 0;
+	std::vector<float> data;
+	FloatImage () = default;
+	FloatImage (int w, int h);
+};
+
+struct GreyPyramid {
+	std::vector<FloatImage> levels, gx, gy;   // grey (0–255) and its Scharr derivatives per level, finest first
+};
+
+GreyPyramid buildPyramid (const Image& image, int levels);
+// one point from a to b (input pixels of level 0); false if lost (flat patch, out of the image)
+bool lucasKanade (const GreyPyramid& a, const GreyPyramid& b, float x, float y, float& ox, float& oy, const TrackOptions& o);
+// robust pose refinement from R, t; inlier mask and median inlier reprojection error
+bool refinePose (const Intrinsics& K, const std::vector<V3>& object, const std::vector<std::array<double, 2>>& image, M3& R, V3& t,
+	const TrackOptions& o, std::vector<bool>& inlier, double& medianError);
+
 // --- imaging (imaging.cpp) ----------------------------------------------------------------------------------------
 
 struct LabImage {
