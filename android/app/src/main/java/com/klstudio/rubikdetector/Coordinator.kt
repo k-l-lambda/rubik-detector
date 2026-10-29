@@ -228,9 +228,34 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 			return
 		}
 		noCube = 0
-		// a track is corrected only by evidence-grade fits; with none, any good fit with a cube starts one
-		if (!s.fits && (seeded || !s.good))
+		if (!s.good)
 			return
+		if (!s.fits) {
+			// a good fit short of evidence grade: it starts a track when there is none, and votes against a track it
+			// disagrees with (a track can slide onto a hand moving over the cube and stay healthy); it never blends in
+			if (seeded) {
+				val atK = synchronized(history) { history[k] }?.first
+				val atM = synchronized(history) { history[lastTracked] }?.first
+				if (atK != null && atM != null) {
+					val dc = Math.sqrt((0 until 3).sumOf { (d.t[it] - atK.t[it]) * (d.t[it] - atK.t[it]) })
+					val (angle, _) = Cube.frameMatch(atK.R, d.R)
+					if (dc > settings.agreeCentre || angle > settings.agreeDeg) {
+						disagreements++
+						if (disagreements >= 2) {
+							val (R, t) = movedOn(d.R, d.t, atK, atM)
+							if (tracker.reseed(R, t)) {
+								count("corrected by good fits")
+								event(String.format("track corrected by two disagreeing detections (%.2f cubie, %.1f°)", dc, angle), s.time)
+								disagreements = 0
+							}
+						}
+						else
+							count("disagreeing good fit")
+					}
+				}
+				return
+			}
+		}
 		lastFit = Pair(k, d)
 		lastFitTime = s.time
 		val atK = synchronized(history) { history[k] }?.first

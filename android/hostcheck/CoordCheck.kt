@@ -267,6 +267,15 @@ fun main(args: Array<String>) {
 	for ((ph, e) in byPhase.toSortedMap())
 		println(String.format("  displayed during %-8s: error median %.3f p90 %.3f (%d)", ph, pct(e, 0.5), pct(e, 0.9), e.size))
 	println("  stats: " + coord.stats.toSortedMap())
+	val filled = huds.filter { it.second.mode == HudMode.TRACKED }.map { h -> h.second.colours.count { it != 0 } }
+	println("  colours filled per tracked HUD: " + filled.groupingBy { it }.eachCount().toSortedMap())
+	// the first seconds: where the track came from
+	huds.map { it.second }.filter { it.time < 7 && it.mode == HudMode.TRACKED }.groupBy { (it.time * 2).toInt() }.forEach { (_, hs) ->
+		val h = hs.first(); val ref = refs.getOrNull(h.index.toInt())
+		val e = if (ref != null && fx > 0) centreError(h.R!!, h.t!!, ref.R, ref.t, fx, w / 2.0, h.frame.height / 2.0) else Double.NaN
+		println(String.format("    t %.1f frame %d: error vs the reference %.2f, inliers %d, snapshot fits %s good %s cost %.3f", h.time, h.index, e,
+			h.track!!.inliers, h.snapshot?.fits, h.snapshot?.good, h.snapshot?.detection?.latticeCost ?: -1.0))
+	}
 	val last = huds.lastOrNull()?.second
 	println("events (last): " + (last?.events?.takeLast(6)?.joinToString(" | ") ?: ""))
 	if (outDir != null) {
