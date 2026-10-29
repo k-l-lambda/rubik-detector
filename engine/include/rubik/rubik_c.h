@@ -32,6 +32,7 @@ typedef struct {
 	uint64_t seed;
 	double min_extent, max_extent, centre_share;
 	int32_t coarse_segments, shift_pairs, starts, joint;   // DetectOptions search effort
+	double roi_margin;       // DetectOptions::roiMargin
 } rk_options;
 
 typedef struct {
@@ -47,6 +48,7 @@ typedef struct {
 	rk_sample samples[27];
 	double presence;         // ViewResult::presence (threshold RK_PRESENCE_THRESHOLD)
 	double face_coverage[3];
+	int32_t roi[4];          // ViewResult::roi
 } rk_view;
 
 #define RK_PRESENCE_THRESHOLD 0.5

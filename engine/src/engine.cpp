@@ -180,11 +180,78 @@ Camera completed (Camera c, const Image& image) {
 }
 
 ViewResult Detector::detect (const Image& image, const Camera& camera, const DetectOptions& options) {
-	ViewResult out;
 	if (!(camera.fx > 0)) {
+		ViewResult out;
 		out.error = "unknown focal length: estimate it first (Detector::estimateFocal)";
 		return out;
 	}
+	if (options.search != Search::Local || !(options.roiMargin > 0) || !validImage(image))
+		return detectIn(image, camera, options, 0);
+	// a local search looks only around the prior: the crop of the prior cube's projected outline, grown by roiMargin of
+	// its size on each side, at the whole frame's working scale (the segment stage is most of a detection and scales
+	// with the pixels)
+	const Camera cam = completed(camera, image);
+	M3 P = poseR(options.prior);
+	double u0 = 1e300, u1 = -1e300, v0 = 1e300, v1 = -1e300;
+	for (int corner = 0; corner < 8; corner++) {
+		V3 q = mul(P, V3{corner & 1 ? 1.5 : -1.5, corner & 2 ? 1.5 : -1.5, corner & 4 ? 1.5 : -1.5}) + V3{options.prior.t[0], options.prior.t[1], options.prior.t[2]};
+		if (!(q.z > 0))
+			return detectIn(image, camera, options, 0);
+		double u = cam.fx * q.x / q.z + cam.cx, v = cam.fy * q.y / q.z + cam.cy;
+		u0 = std::min(u0, u);
+		u1 = std::max(u1, u);
+		v0 = std::min(v0, v);
+		v1 = std::max(v1, v);
+	}
+	const double mu = options.roiMargin * (u1 - u0), mv = options.roiMargin * (v1 - v0);
+	const int x0 = std::max(0, int(std::floor(u0 - mu))), y0 = std::max(0, int(std::floor(v0 - mv)));
+	const int x1 = std::min(image.width, int(std::ceil(u1 + mu))), y1 = std::min(image.height, int(std::ceil(v1 + mv)));
+	if (x1 - x0 < 32 || y1 - y0 < 32 || double(x1 - x0) * (y1 - y0) > 0.8 * image.width * image.height)
+		return detectIn(image, camera, options, 0);
+	const int channels = (image.format == PixelFormat::BGR || image.format == PixelFormat::RGB) ? 3 : 4;
+	const int stride = image.stride ? image.stride : image.width * channels;
+	Image crop{image.data + size_t(y0) * stride + size_t(x0) * channels, x1 - x0, y1 - y0, stride, image.format};
+	Camera c = cam;
+	c.cx -= x0;
+	c.cy -= y0;
+	DetectOptions o = options;
+	const double s = options.workWidth > 0 ? double(std::min(options.workWidth, image.width)) / image.width : 1.0;
+	o.workWidth = options.workWidth > 0 ? std::max(16, int(std::lround(crop.width * s))) : 0;
+	ViewResult out = detectIn(crop, c, o, std::max(image.width, image.height));
+	// back to the whole frame
+	for (FaceletSample& q : out.samples)
+		for (int k = 0; k < 4; k++) {
+			q.quad[2 * k] += float(x0);
+			q.quad[2 * k + 1] += float(y0);
+		}
+	for (Segment& g : out.segments) {
+		g.x1 += float(x0);
+		g.x2 += float(x0);
+		g.y1 += float(y0);
+		g.y2 += float(y0);
+	}
+	out.camera = cam;
+	out.roi = {x0, y0, x1 - x0, y1 - y0};
+	// a crop can let the fit slide off the prior (seen on real video: 1.7 cubies, cost 0.27, where the whole frame
+	// kept it at cost 0.08): a crop result over 0.6 cubie from the prior is checked on the whole frame, the cheaper kept
+	V3 d = mulT(P, V3{out.pose.t[0] - options.prior.t[0], out.pose.t[1] - options.prior.t[1], out.pose.t[2] - options.prior.t[2]});
+	if (!out.ok || std::sqrt(dot(d, d)) > 0.6) {
+		ViewResult whole = detectIn(image, camera, options, 0);
+		whole.timings.segments += out.timings.segments;
+		whole.timings.axes += out.timings.axes;
+		whole.timings.position += out.timings.position;
+		whole.timings.sampling += out.timings.sampling;
+		if (whole.ok && (!out.ok || whole.latticeCost < out.latticeCost))
+			return whole;
+		out.timings = whole.timings;
+	}
+	return out;
+}
+
+// detection on `image` as given; extentLong: the long side (input pixels) the presence size check refers to, 0 = this
+// image's (a crop refers to its frame)
+ViewResult Detector::detectIn (const Image& image, const Camera& camera, const DetectOptions& options, int extentLong) {
+	ViewResult out;
 	Prepared p = prepare(image, options.workWidth, scratch->planes);
 	out.segmentCount = int(p.segs.s.size());
 	out.timings.segments = p.msSegments;
@@ -216,7 +283,7 @@ ViewResult Detector::detect (const Image& image, const Camera& camera, const Det
 		out.faceCoverage = faceCoverage(fit.R, fit.t, in);
 		std::array<double, 3> c = out.faceCoverage;
 		std::sort(c.begin(), c.end());
-		// projected size of the cube outline, as a share of the working image's long side
+		// projected size of the cube outline, as a share of the (frame's) long side
 		double u0 = 1e300, u1 = -1e300, v0 = 1e300, v1 = -1e300;
 		bool front = true;
 		for (int corner = 0; corner < 8; corner++) {
@@ -232,7 +299,8 @@ ViewResult Detector::detect (const Image& image, const Camera& camera, const Det
 			v0 = std::min(v0, v);
 			v1 = std::max(v1, v);
 		}
-		double extent = front ? std::max(u1 - u0, v1 - v0) / std::max(p.W, p.H) : 1e9;
+		const double longSide = extentLong > 0 ? extentLong * p.s : std::max(p.W, p.H);
+		double extent = front ? std::max(u1 - u0, v1 - v0) / longSide : 1e9;
 		bool plausible = extent >= 0.75 * options.minExtent && extent <= options.maxExtent;
 		out.presence = plausible ? (c[1] + c[2]) / 2 - fit.cost : 0.0;
 	}

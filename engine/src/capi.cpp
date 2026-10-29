@@ -35,6 +35,7 @@ void rk_default_options (rk_options* o) {
 	o->shift_pairs = d.shiftPairs;
 	o->starts = d.starts;
 	o->joint = d.joint;
+	o->roi_margin = d.roiMargin;
 }
 
 double rk_pose_cost (rk_detector* d, const uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t format,
@@ -72,6 +73,7 @@ void rk_detect (rk_detector* d, const uint8_t* data, int32_t width, int32_t heig
 	options.shiftPairs = o->shift_pairs != 0;
 	options.starts = o->starts;
 	options.joint = o->joint;
+	options.roiMargin = o->roi_margin;
 	try {
 		ViewResult r = d->detector.detect(image, camera, options);
 		out->ok = r.ok;
@@ -92,6 +94,7 @@ void rk_detect (rk_detector* d, const uint8_t* data, int32_t width, int32_t heig
 		out->ms_sampling = r.timings.sampling;
 		out->presence = r.presence;
 		std::copy(r.faceCoverage.begin(), r.faceCoverage.end(), out->face_coverage);
+		std::copy(r.roi.begin(), r.roi.end(), out->roi);
 		out->sample_count = int32_t(std::min<size_t>(r.samples.size(), 27));
 		for (int i = 0; i < out->sample_count; i++) {
 			const FaceletSample& s = r.samples[i];
@@ -125,6 +128,7 @@ int32_t rk_detect_segments (rk_detector* d, const uint8_t* data, int32_t width, 
 	options.shiftPairs = o->shift_pairs != 0;
 	options.starts = o->starts;
 	options.joint = o->joint;
+	options.roiMargin = o->roi_margin;
 	options.keepSegments = true;
 	try {
 		ViewResult r = d->detector.detect(image, camera, options);
@@ -146,6 +150,7 @@ int32_t rk_detect_segments (rk_detector* d, const uint8_t* data, int32_t width, 
 		out->ms_sampling = r.timings.sampling;
 		out->presence = r.presence;
 		std::copy(r.faceCoverage.begin(), r.faceCoverage.end(), out->face_coverage);
+		std::copy(r.roi.begin(), r.roi.end(), out->roi);
 		for (const Segment& g : r.segments) {
 			if (written >= capacity)
 				break;

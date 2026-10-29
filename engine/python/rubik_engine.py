@@ -16,7 +16,7 @@ class Options(ctypes.Structure):
 		("sample_size", ctypes.c_double), ("seed", ctypes.c_uint64),
 		("min_extent", ctypes.c_double), ("max_extent", ctypes.c_double), ("centre_share", ctypes.c_double),
 		("coarse_segments", ctypes.c_int32), ("shift_pairs", ctypes.c_int32),
-		("starts", ctypes.c_int32), ("joint", ctypes.c_int32)]
+		("starts", ctypes.c_int32), ("joint", ctypes.c_int32), ("roi_margin", ctypes.c_double)]
 
 
 class View(ctypes.Structure):
@@ -24,7 +24,8 @@ class View(ctypes.Structure):
 		("lattice_cost", ctypes.c_double), ("segment_count", ctypes.c_int32), ("family_segments", ctypes.c_int32),
 		("camera", ctypes.c_double * 4), ("support", ctypes.c_double),
 		("ms_segments", ctypes.c_double), ("ms_axes", ctypes.c_double), ("ms_position", ctypes.c_double), ("ms_sampling", ctypes.c_double),
-		("sample_count", ctypes.c_int32), ("samples", Sample * 27), ("presence", ctypes.c_double), ("face_coverage", ctypes.c_double * 3)]
+		("sample_count", ctypes.c_int32), ("samples", Sample * 27), ("presence", ctypes.c_double), ("face_coverage", ctypes.c_double * 3),
+		("roi", ctypes.c_int32 * 4)]
 
 
 class Focal(ctypes.Structure):
@@ -93,7 +94,7 @@ def view_dict(v):
 		"lattice_cost": v.lattice_cost, "segments": v.segment_count, "family_segments": v.family_segments,
 		"camera": list(v.camera), "support": v.support,
 		"ms": {"segments": v.ms_segments, "axes": v.ms_axes, "position": v.ms_position, "sampling": v.ms_sampling},
-		"samples": samples, "presence": v.presence, "face_coverage": list(v.face_coverage), "_raw": v}
+		"samples": samples, "presence": v.presence, "face_coverage": list(v.face_coverage), "roi": list(v.roi), "_raw": v}
 
 
 class Detector:
@@ -114,7 +115,7 @@ class Detector:
 		o.work_width = work_width
 		o.seed = seed
 		for key, value in effort.items():
-			setattr(o, key, int(value))
+			setattr(o, key, float(value) if key == "roi_margin" else int(value))
 		if prior is not None:
 			o.search = 1
 			o.prior[:] = list(np.asarray(prior[0], float).ravel()) + list(np.asarray(prior[1], float))
