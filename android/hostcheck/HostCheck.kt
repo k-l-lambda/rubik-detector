@@ -21,7 +21,7 @@ fun main(args: Array<String>) {
 	val facelets = labels?.let { l -> Regex("\"facelets\":\\s*\"([LRDUBF]{54})\"").findAll(l).map { it.groupValues[1] }.toList() } ?: emptyList()
 	// frame0001.png … (a video), or any PNGs (e.g. the negatives: each shown for a second)
 	val pngs = dir.listFiles { f -> f.name.endsWith(".png") }!!.sortedBy { it.name }
-	val videoFrames = pngs.filter { it.name.matches(Regex("frame\\d{4}\\.png")) }
+	val videoFrames = pngs.filter { it.name.matches(Regex("frame\\d{4}\\.(png|jpg)")) }
 	val frames = if (videoFrames.isNotEmpty()) videoFrames else pngs.flatMap { f -> List(30) { f } }
 	val n = frames.size
 	val truth = { i: Int -> facelets.getOrNull(1 + i) }   // cube.facelets first, then one per frame

@@ -89,7 +89,7 @@ fun main(args: Array<String>) {
 	val fxGiven = args.getOrNull(3)?.toDoubleOrNull()
 	val labelFile = dir.resolve("labels.json")
 	val fps = if (labelFile.exists()) Regex("\"fps\":\\s*([0-9.]+)").find(labelFile.readText())!!.groupValues[1].toDouble() else 30.0
-	val frames = dir.listFiles { f -> f.name.matches(Regex("frame\\d{4}\\.png")) }!!.sortedBy { it.name }
+	val frames = dir.listFiles { f -> f.name.matches(Regex("frame\\d{4}\\.(png|jpg)")) }!!.sortedBy { it.name }
 	val n = frames.size
 	val refs = parseRefs(dir.resolve("eval/results.json"))
 	val camera = 0.03
