@@ -2,6 +2,7 @@
 # Host check of the Android app's pipeline: builds the JNI library for the host (g++) and the app's platform-free
 # Kotlin sources (Engine.kt, Cube.kt, Colors.kt, Pipeline.kt) with HostCheck.kt, then runs it on a rendered video.
 #	hostcheck/run.sh VIDEO_DIR [latency scale]
+#	MAIN=CoordCheckKt hostcheck/run.sh VIDEO_DIR [latency scale] [OUT_DIR for a HUD video] [fx]
 # Needs: g++, a JDK with JNI headers (JNI_INCLUDE, default: the first jni.h found under JAVA_HOME or /usr/lib/jvm),
 # Kotlin compiler jars (KOTLINC_CP: a classpath with kotlin-compiler-embeddable and its dependencies; default from
 # ~/.gradle caches) and the Kotlin stdlib (KOTLIN_STDLIB).
@@ -28,5 +29,6 @@ if [ ! -f "$OUT/librubik_jni.so" ] || [ -n "$(find "$ROOT/engine/src" "$ROOT/eng
 fi
 SRC="$ROOT/android/app/src/main/java/com/klstudio/rubikdetector"
 java -cp "$KOTLINC_CP" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler -nowarn -no-reflect -no-stdlib -jvm-target 11 -cp "$KOTLIN_STDLIB" \
-	-d "$OUT/classes" "$SRC/Engine.kt" "$SRC/Cube.kt" "$SRC/Colors.kt" "$SRC/Pipeline.kt" "$HERE/HostCheck.kt" 2>&1 | grep -v "^warning: unable to find kotlin" || true
-java -Djava.library.path="$OUT" -cp "$OUT/classes:$KOTLIN_STDLIB" HostCheckKt "$@"
+	-d "$OUT/classes" "$SRC/Engine.kt" "$SRC/Cube.kt" "$SRC/Colors.kt" "$SRC/Pipeline.kt" "$SRC/Coordinator.kt" "$HERE"/*.kt 2>&1 | grep -v "^warning: unable to find kotlin" || true
+# MAIN: HostCheckKt (the detection pipeline alone) or CoordCheckKt (tracking + background detection)
+java -Djava.library.path="$OUT" -cp "$OUT/classes:$KOTLIN_STDLIB" "${MAIN:-HostCheckKt}" "$@"

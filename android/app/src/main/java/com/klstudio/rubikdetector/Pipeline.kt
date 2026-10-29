@@ -100,12 +100,13 @@ class Snapshot(
 	val processMs: Double,
 	val events: List<String>,
 	val steps: StepTimes,
+	val fits: Boolean,              // good and evidence-grade (the relative cost gate): a pose to re-seed a tracker from
 )
 
 class Pipeline(val settings: Settings = Settings()) {
 	var stage = Stage.FOCAL
 		private set
-	var fx = 0.0                    // focal length of the upright frame, pixels
+	@Volatile var fx = 0.0          // focal length of the upright frame, pixels (read by the tracker thread)
 	var focal: Focal? = null
 	private var prev: Detection? = null
 	private val costs = ArrayList<Double>()
@@ -164,8 +165,9 @@ class Pipeline(val settings: Settings = Settings()) {
 			events.removeAt(0)
 	}
 
-	// One camera frame, already set upright on the detector. time: capture time in seconds.
-	fun process(detector: Detector, frame: FrameInfo, time: Double): Snapshot {
+	// One camera frame, already set upright on the detector. time: capture time in seconds. prior: the local search's
+	// start (the frame tracker's pose at this frame) instead of the prediction from the last detections.
+	fun process(detector: Detector, frame: FrameInfo, time: Double, prior: Pair<DoubleArray, DoubleArray>? = null): Snapshot {
 		val started = System.nanoTime()
 		tFirst = 0.0
 		tRetry = 0.0
@@ -191,7 +193,7 @@ class Pipeline(val settings: Settings = Settings()) {
 				event("focal estimate failed", time)
 			return snapshot(time, frame, probe, false, null, started)
 		}
-		val (r, link) = track(detector, frame, time)
+		val (r, link) = track(detector, frame, time, prior)
 		val good = r.ok && r.latticeCost <= settings.fallbackCost && r.presence >= settings.presenceThreshold
 		when (stage) {
 			Stage.ACQUIRE -> timed({ tEstimate += it }) { acquire(time) }
@@ -221,8 +223,9 @@ class Pipeline(val settings: Settings = Settings()) {
 		val evs = events.toList()
 		val steps = StepTimes(tFirst, tRetry, tPlace, tEstimate, tFollow, (System.nanoTime() - snapStarted) / 1e6)
 		val presence = r?.presence ?: 0.0
+		val fits = r != null && good && fitsWell(r)
 		return Snapshot(stage, presence >= settings.presenceThreshold, presence, time, frame, fx, focal, r, good, link, frames.size, chainCount, covered, estimate,
-			stable.size, follow, net, (System.nanoTime() - started) / 1e6, evs, steps)
+			stable.size, follow, net, (System.nanoTime() - started) / 1e6, evs, steps, fits)
 	}
 
 	private fun net(follow: FollowInfo?): Net {
@@ -280,10 +283,10 @@ class Pipeline(val settings: Settings = Settings()) {
 		return if (d.isEmpty()) 1e9 else d[d.size / 2]
 	}
 
-	private fun track(detector: Detector, frame: FrameInfo, time: Double): Pair<Detection, LinkInfo?> {
+	private fun track(detector: Detector, frame: FrameInfo, time: Double, external: Pair<DoubleArray, DoubleArray>?): Pair<Detection, LinkInfo?> {
 		var mode = "wide"
 		var r: Detection? = null
-		val prior = predict(time)
+		val prior = external ?: predict(time)
 		if (prior != null) {
 			r = timed({ tFirst += it }) { detector.detect(frame, fx, prior, settings.workWidth, settings.keepSegments) }
 			mode = "local"

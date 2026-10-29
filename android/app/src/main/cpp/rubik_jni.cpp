@@ -280,6 +280,89 @@ JNIEXPORT jstring JNICALL Java_com_klstudio_rubikdetector_Engine_nativeApplyMove
 	return r.empty() ? nullptr : env->NewStringUTF(r.c_str());
 }
 
+// --- tracking between detections ---
+
+struct TrackerHandle {
+	FrameTracker tracker;
+	std::vector<uint8_t> upright;
+};
+
+JNIEXPORT jlong JNICALL Java_com_klstudio_rubikdetector_Engine_nativeTrackerCreate (JNIEnv*, jclass) {
+	return reinterpret_cast<jlong>(new TrackerHandle());
+}
+
+JNIEXPORT void JNICALL Java_com_klstudio_rubikdetector_Engine_nativeTrackerDestroy (JNIEnv*, jclass, jlong h) {
+	delete reinterpret_cast<TrackerHandle*>(h);
+}
+
+// Turns the RGBA frame upright into the tracker's own buffer. Returns {width, height, ms}.
+JNIEXPORT jdoubleArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeTrackerSetFrame (JNIEnv* env, jclass, jlong h, jobject buffer,
+	jint width, jint height, jint stride, jint rotation) {
+	auto t0 = std::chrono::steady_clock::now();
+	auto* T = reinterpret_cast<TrackerHandle*>(h);
+	const auto* src = static_cast<const uint8_t*>(env->GetDirectBufferAddress(buffer));
+	auto [w, ht] = rotate(src, width, height, stride, rotation, T->upright);
+	return toArray(env, {double(w), double(ht), msSince(t0)});
+}
+
+// Seeds on the frame set last, with a pose (R 9, t 3) and fx (square pixels, principal point the centre).
+JNIEXPORT void JNICALL Java_com_klstudio_rubikdetector_Engine_nativeTrackerSeed (JNIEnv* env, jclass, jlong h, jint width, jint height, jdouble fx,
+	jdoubleArray pose) {
+	auto* T = reinterpret_cast<TrackerHandle*>(h);
+	jdouble* p = env->GetDoubleArrayElements(pose, nullptr);
+	Pose q;
+	std::copy(p, p + 9, q.R.begin());
+	std::copy(p + 9, p + 12, q.t.begin());
+	env->ReleaseDoubleArrayElements(pose, p, JNI_ABORT);
+	T->tracker.seed({T->upright.data(), width, height, width * 4, PixelFormat::RGBA}, {fx, fx, 0, 0}, q);
+}
+
+JNIEXPORT void JNICALL Java_com_klstudio_rubikdetector_Engine_nativeTrackerReset (JNIEnv*, jclass, jlong h) {
+	reinterpret_cast<TrackerHandle*>(h)->tracker.reset();
+}
+
+// A new pose (R 9, t 3) for the frame tracked last; false if none yet.
+JNIEXPORT jboolean JNICALL Java_com_klstudio_rubikdetector_Engine_nativeTrackerReseed (JNIEnv* env, jclass, jlong h, jdoubleArray pose) {
+	auto* T = reinterpret_cast<TrackerHandle*>(h);
+	jdouble* p = env->GetDoubleArrayElements(pose, nullptr);
+	Pose q;
+	std::copy(p, p + 9, q.R.begin());
+	std::copy(p + 9, p + 12, q.t.begin());
+	env->ReleaseDoubleArrayElements(pose, p, JNI_ABORT);
+	return T->tracker.reseed(q);
+}
+
+// Tracks into the frame set last. Out: ok, R (9), t (3), renaming, tracked, inliers, reprojection, ms pyramid, flow,
+// pose, pointCount, (x, y)…
+JNIEXPORT jdoubleArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeTrackerTrack (JNIEnv* env, jclass, jlong h, jint width, jint height) {
+	auto* T = reinterpret_cast<TrackerHandle*>(h);
+	TrackResult r = T->tracker.track({T->upright.data(), width, height, width * 4, PixelFormat::RGBA});
+	std::vector<double> out = {double(r.ok)};
+	out.insert(out.end(), r.pose.R.begin(), r.pose.R.end());
+	out.insert(out.end(), r.pose.t.begin(), r.pose.t.end());
+	out.insert(out.end(), {double(r.renaming), double(r.tracked), double(r.inliers), r.reprojection, r.msPyramid, r.msFlow, r.msPose,
+		double(r.points.size())});
+	for (const auto& p : r.points)
+		out.insert(out.end(), {double(p[0]), double(p[1])});
+	return toArray(env, out);
+}
+
+// Facelet quads of a pose (R 9, t 3) for drawing: per R U F facelet (view frame) facelet, then 4 corners (8).
+JNIEXPORT jdoubleArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeProjectFacelets (JNIEnv* env, jclass, jint width, jint height,
+	jdouble fx, jdoubleArray pose) {
+	jdouble* p = env->GetDoubleArrayElements(pose, nullptr);
+	Pose q;
+	std::copy(p, p + 9, q.R.begin());
+	std::copy(p + 9, p + 12, q.t.begin());
+	env->ReleaseDoubleArrayElements(pose, p, JNI_ABORT);
+	std::vector<double> out;
+	for (const auto& [k, quad] : projectFacelets({fx, fx, width / 2.0, height / 2.0}, q)) {
+		out.push_back(k);
+		out.insert(out.end(), quad.begin(), quad.end());
+	}
+	return toArray(env, out);
+}
+
 // The 24 cube rotations (9 ints each, row-major) followed by their facelet permutations (54 each).
 JNIEXPORT jintArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeRotationTables (JNIEnv* env, jclass) {
 	std::vector<jint> out;

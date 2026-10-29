@@ -338,6 +338,12 @@ Pose facingPose (const Pose& pose, int* gOut, int near) {
 	return out;
 }
 
+std::vector<std::pair<int, std::array<double, 8>>> projectFacelets (const Camera& camera, const Pose& pose, double sampleSize) {
+	M3 R;
+	std::copy(pose.R.begin(), pose.R.end(), R.begin());
+	return faceletQuads({camera.fx, camera.fy > 0 ? camera.fy : camera.fx, camera.cx, camera.cy}, R, {pose.t[0], pose.t[1], pose.t[2]}, sampleSize);
+}
+
 // --- FrameTracker --------------------------------------------------------------------------------------------------
 
 struct FrameTracker::State {
@@ -422,6 +428,19 @@ void FrameTracker::seed (const Image& image, const Camera& camera, const Pose& p
 	topUp(S.points, S.K, S.R, S.t, S.width, S.height, 64);
 	S.tracking = !S.points.empty();
 	(void)ms(t0);
+}
+
+bool FrameTracker::reseed (const Pose& pose) {
+	State& S = *state;
+	if (!S.hasPrev || !(S.K.fx > 0))
+		return false;
+	std::copy(pose.R.begin(), pose.R.end(), S.R.begin());
+	S.t = {pose.t[0], pose.t[1], pose.t[2]};
+	S.points.clear();
+	S.renaming = -1;
+	topUp(S.points, S.K, S.R, S.t, S.width, S.height, 64);
+	S.tracking = !S.points.empty();
+	return S.tracking;
 }
 
 void FrameTracker::reset () {

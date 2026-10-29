@@ -218,6 +218,9 @@ public:
 	FrameTracker& operator= (FrameTracker&&) noexcept;
 
 	void seed (const Image& image, const Camera& camera, const Pose& pose);
+	// a new pose for the frame tracked last (a detection moved on to it): fresh points, no new pyramid; false if
+	// there is no such frame yet
+	bool reseed (const Pose& pose);
 	TrackResult track (const Image& image);
 	void reset ();
 	bool tracking () const;
@@ -233,6 +236,10 @@ private:
 // assume): a cube turned past a face edge keeps its frame otherwise. g: the rotation applied (pose.R · rotations()[g]);
 // of the renamings that do it, the one nearest `near` (a rotation index into the original frame, -1: any).
 Pose facingPose (const Pose& pose, int* g = nullptr, int near = -1);
+
+// The sampled-part quads (sampleSize of the side, as Detector::sample) of the R, U, F facelets of a pose, projected:
+// per facelet (view frame) four corners in the camera's pixels. For drawing a tracked pose.
+std::vector<std::pair<int, std::array<double, 8>>> projectFacelets (const Camera& camera, const Pose& pose, double sampleSize = 0.46);
 
 // Whole-cube rotations relate view frames: a view placed by rotation g puts its facelet k at facelet
 // rotationPerm(g)[k] of the common frame.

@@ -86,6 +86,20 @@ object Engine {
 		threshold: Double): IntArray
 	@JvmStatic external fun nativeApplyMoves(state: String, moves: String): String?
 	@JvmStatic external fun nativeRotationTables(): IntArray
+	@JvmStatic external fun nativeTrackerCreate(): Long
+	@JvmStatic external fun nativeTrackerDestroy(handle: Long)
+	@JvmStatic external fun nativeTrackerSetFrame(handle: Long, buffer: ByteBuffer, width: Int, height: Int, stride: Int, rotation: Int): DoubleArray
+	@JvmStatic external fun nativeTrackerSeed(handle: Long, width: Int, height: Int, fx: Double, pose: DoubleArray)
+	@JvmStatic external fun nativeTrackerTrack(handle: Long, width: Int, height: Int): DoubleArray
+	@JvmStatic external fun nativeTrackerReseed(handle: Long, pose: DoubleArray): Boolean
+	@JvmStatic external fun nativeTrackerReset(handle: Long)
+	@JvmStatic external fun nativeProjectFacelets(width: Int, height: Int, fx: Double, pose: DoubleArray): DoubleArray
+
+	// per R U F facelet of a pose (view frame), its sampled-part quad in pixels
+	fun projectFacelets(frame: FrameInfo, fx: Double, R: DoubleArray, t: DoubleArray): List<Pair<Int, FloatArray>> {
+		val o = nativeProjectFacelets(frame.width, frame.height, fx, R + t)
+		return List(o.size / 9) { i -> Pair(o[i * 9].toInt(), FloatArray(8) { o[i * 9 + 1 + it].toFloat() }) }
+	}
 
 	fun estimate(views: List<Detection>, rotations: IntArray, legal: Boolean, partial: Boolean, reliability: Boolean): Estimate {
 		val packed = views.map { it.packed() }
@@ -116,6 +130,49 @@ object Engine {
 		nativeConflicts(model.mean, model.variance, view.packed(), rotation, state, threshold)
 
 	fun applyMoves(state: String, moves: String): String = nativeApplyMoves(state, moves) ?: throw IllegalArgumentException(moves)
+}
+
+class Track(
+	val ok: Boolean,
+	val R: DoubleArray,             // facing: the faces turned to the camera are R U F
+	val t: DoubleArray,
+	val renaming: Int,
+	val tracked: Int,
+	val inliers: Int,
+	val reprojection: Double,
+	val ms: DoubleArray,            // pyramid, flow, pose
+	val points: List<FloatArray>,
+)
+
+// The engine's FrameTracker (its own thread, own frame buffer): seed with a detected frame, then track every frame.
+class Tracker : AutoCloseable {
+	private var handle = Engine.nativeTrackerCreate()
+
+	fun setFrame(buffer: ByteBuffer, width: Int, height: Int, stride: Int, rotation: Int): FrameInfo {
+		val o = Engine.nativeTrackerSetFrame(handle, buffer, width, height, stride, rotation)
+		return FrameInfo(o[0].toInt(), o[1].toInt(), o[2])
+	}
+
+	fun seed(frame: FrameInfo, fx: Double, R: DoubleArray, t: DoubleArray) = Engine.nativeTrackerSeed(handle, frame.width, frame.height, fx, R + t)
+
+	// a new pose for the frame tracked last
+	fun reseed(R: DoubleArray, t: DoubleArray): Boolean = Engine.nativeTrackerReseed(handle, R + t)
+
+	fun reset() = Engine.nativeTrackerReset(handle)
+
+	fun track(frame: FrameInfo): Track {
+		val o = Engine.nativeTrackerTrack(handle, frame.width, frame.height)
+		val n = o[20].toInt()
+		return Track(o[0] != 0.0, o.copyOfRange(1, 10), o.copyOfRange(10, 13), o[13].toInt(), o[14].toInt(), o[15].toInt(), o[16],
+			o.copyOfRange(17, 20), List(n) { floatArrayOf(o[21 + 2 * it].toFloat(), o[22 + 2 * it].toFloat()) })
+	}
+
+	override fun close() {
+		if (handle != 0L) {
+			Engine.nativeTrackerDestroy(handle)
+			handle = 0L
+		}
+	}
 }
 
 // One engine instance (scratch buffers: one per thread) and the frame it works on.
