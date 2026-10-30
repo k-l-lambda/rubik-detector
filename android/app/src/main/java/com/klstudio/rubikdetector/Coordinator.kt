@@ -158,6 +158,17 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 		if (f == null) null else set(f)
 	}
 
+	// a copy of the frame `index` (ring or pinned; null if gone): the frame a snapshot was detected on, for dumps
+	fun copyFrame(index: Long): RawFrame? = synchronized(ring) {
+		val f = ring[(index % ring.size).toInt()]?.takeIf { it.index == index } ?: pinned[index] ?: return@synchronized null
+		val copy = RawFrame(ByteBuffer.allocateDirect(f.buffer.limit()).order(ByteOrder.nativeOrder()), f.width, f.height, f.stride, f.rotation, f.time, f.index)
+		val src = f.buffer.duplicate()
+		src.rewind()
+		copy.buffer.put(src)
+		copy.buffer.flip()
+		copy
+	}
+
 	private fun pin(index: Long) = synchronized(ring) {
 		val f = ring[(index % ring.size).toInt()]?.takeIf { it.index == index } ?: return@synchronized
 		val copy = RawFrame(ByteBuffer.allocateDirect(f.buffer.limit()).order(ByteOrder.nativeOrder()), f.width, f.height, f.stride, f.rotation, f.time, f.index)

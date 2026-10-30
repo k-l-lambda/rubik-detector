@@ -58,10 +58,14 @@ class Stats(
 	val dumped: String? = null,
 )
 
+// a finished dump: how many so far, the file, or why it failed (for the UI's feedback)
+class DumpResult(val count: Int, val path: String?, val error: String? = null)
+
 class CameraSession(private val context: Context) {
 	val snapshots = MutableStateFlow<Snapshot?>(null)
 	val huds = MutableStateFlow<Hud?>(null)
 	val stats = MutableStateFlow(Stats())
+	val dumps = MutableStateFlow<DumpResult?>(null)
 	val coordinator = Coordinator()
 	val pipeline get() = coordinator.pipeline
 	@Volatile var tracking = true
@@ -71,6 +75,10 @@ class CameraSession(private val context: Context) {
 	@Volatile private var resetRequest: Boolean? = null   // keep the focal length?
 	@Volatile private var pipelineReset: Boolean? = null  // tracking: the reset for the detector thread
 	@Volatile private var dumpRequested = false
+	@Volatile private var dumpedPath: String? = null
+	@Volatile private var detectedIndex = -1L        // the frame of the newest published snapshot (tracking)
+	private val saver = Executors.newSingleThreadExecutor()   // PNG encoding off the camera threads
+	private var dumpCount = 0
 
 	private val worker = Executors.newSingleThreadExecutor()
 	private val detectorThread = Executors.newSingleThreadExecutor()
@@ -162,10 +170,10 @@ class CameraSession(private val context: Context) {
 				pipeline.useFocal(cameraFx)
 			val snapshot = pipeline.process(det, frame, timestamp / 1e9)
 			val now = System.nanoTime()
-			var dumped: String? = stats.value.dumped
 			if (dumpRequested) {
 				dumpRequested = false
-				dumped = save(image, rotation, snapshot)
+				val plane0 = image.planes[0]
+				save(copyOf(plane0.buffer, image.width, image.height, plane0.rowStride, rotation, timestamp / 1e9, -1), snapshot)
 			}
 			val processedFps = if (lastProcessed != 0L) 1e9 / (now - lastProcessed) else 0.0
 			lastProcessed = now
@@ -180,7 +188,7 @@ class CameraSession(private val context: Context) {
 				totalMs = (now - started) / 1e6,
 				cameraFx = cameraFx,
 				intrinsics = intrinsics?.describe() ?: "",
-				dumped = dumped,
+				dumped = dumpedPath,
 			)
 			snapshots.value = snapshot
 		}
@@ -206,10 +214,16 @@ class CameraSession(private val context: Context) {
 		val processedFps = if (lastProcessed != 0L) 1e9 / (now - lastProcessed) else 0.0
 		lastProcessed = now
 		val cameraFx = hud?.let { intrinsics?.fx(maxOf(it.frame.width, it.frame.height)) }
-		var dumped: String? = stats.value.dumped
 		if (dumpRequested) {
 			dumpRequested = false
-			snapshots.value?.let { dumped = save(image, image.imageInfo.rotationDegrees, it) }
+			// the frame the shown snapshot was detected on (seconds older than this one on a slow phone), so that the
+			// picture and the text match
+			val s = snapshots.value
+			val frame = coordinator.copyFrame(detectedIndex)
+			if (s != null && frame != null)
+				save(frame, s)
+			else
+				dumpFailed(if (s == null) "no detection yet" else "the detected frame left the ring")
 		}
 		stats.value = Stats(
 			analysisSize = Size(image.width, image.height),
@@ -221,7 +235,7 @@ class CameraSession(private val context: Context) {
 			totalMs = (now - started) / 1e6,
 			cameraFx = cameraFx,
 			intrinsics = intrinsics?.describe() ?: "",
-			dumped = dumped,
+			dumped = dumpedPath,
 		)
 		huds.value = hud
 	}
@@ -247,6 +261,7 @@ class CameraSession(private val context: Context) {
 				done = index
 				if (snapshot != null) {
 					coordinator.post(index, snapshot)
+					detectedIndex = index
 					snapshots.value = snapshot
 				}
 			}
@@ -259,21 +274,44 @@ class CameraSession(private val context: Context) {
 		}
 	}
 
+	private fun copyOf(buffer: java.nio.ByteBuffer, width: Int, height: Int, stride: Int, rotation: Int, time: Double, index: Long): RawFrame {
+		val copy = java.nio.ByteBuffer.allocateDirect(stride * height)
+		val src = buffer.duplicate()
+		src.rewind()
+		src.limit(minOf(src.capacity(), stride * height))
+		copy.put(src)
+		copy.flip()
+		return RawFrame(copy, width, height, stride, rotation, time, index)
+	}
+
 	// the frame (upright PNG) and what the pipeline made of it (text) under the app's external files, for offline
-	// runs of the Python tools
-	private fun save(image: ImageProxy, rotation: Int, s: Snapshot): String {
-		val plane = image.planes[0]
-		val buffer = plane.buffer
-		buffer.rewind()
-		val padded = Bitmap.createBitmap(plane.rowStride / 4, image.height, Bitmap.Config.ARGB_8888)
-		padded.copyPixelsFromBuffer(buffer)
-		val cropped = Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
-		val upright = Bitmap.createBitmap(cropped, 0, 0, image.width, image.height, Matrix().apply { postRotate(rotation.toFloat()) }, false)
-		val dir = File(context.getExternalFilesDir(null), "dumps").apply { mkdirs() }
-		val name = "frame-${System.currentTimeMillis()}"
-		File(dir, "$name.png").outputStream().use { upright.compress(Bitmap.CompressFormat.PNG, 100, it) }
-		File(dir, "$name.txt").writeText(describe(s, stats.value))
-		return File(dir, "$name.png").absolutePath
+	// runs of the Python tools; encoded on the saver thread, the result published to `dumps` (the UI's feedback)
+	private fun save(frame: RawFrame, s: Snapshot) {
+		val text = describe(s, stats.value)
+		saver.execute {
+			try {
+				frame.buffer.rewind()
+				val padded = Bitmap.createBitmap(frame.stride / 4, frame.height, Bitmap.Config.ARGB_8888)
+				padded.copyPixelsFromBuffer(frame.buffer)
+				val cropped = Bitmap.createBitmap(padded, 0, 0, frame.width, frame.height)
+				val upright = Bitmap.createBitmap(cropped, 0, 0, frame.width, frame.height, Matrix().apply { postRotate(frame.rotation.toFloat()) }, false)
+				val dir = File(context.getExternalFilesDir(null), "dumps").apply { mkdirs() }
+				val name = "frame-${System.currentTimeMillis()}"
+				File(dir, "$name.png").outputStream().use { upright.compress(Bitmap.CompressFormat.PNG, 100, it) }
+				File(dir, "$name.txt").writeText(text)
+				val path = File(dir, "$name.png").absolutePath
+				dumpedPath = path
+				dumps.value = DumpResult(++dumpCount, path)
+			}
+			catch (e: Throwable) {
+				Log.e("RubikDetector", "dump failed", e)
+				dumpFailed(e.message ?: e.toString())
+			}
+		}
+	}
+
+	private fun dumpFailed(why: String) {
+		dumps.value = DumpResult(dumpCount, null, why)
 	}
 
 	fun close() {
@@ -289,5 +327,6 @@ class CameraSession(private val context: Context) {
 			coordinator.close()
 		}
 		worker.shutdown()
+		saver.shutdown()
 	}
 }

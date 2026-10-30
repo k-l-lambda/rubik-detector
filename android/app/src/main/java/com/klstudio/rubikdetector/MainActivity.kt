@@ -5,10 +5,13 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -29,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,6 +47,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -90,6 +95,20 @@ fun DetectorScreen(session: CameraSession, owner: androidx.lifecycle.LifecycleOw
 	var showAxes by remember { mutableStateOf(true) }
 	var frozen by remember { mutableStateOf(false) }
 	var cameraFocal by remember { mutableStateOf(false) }
+	// dump feedback: a white flash over the preview, the chip's count, a toast with the file (or why it failed)
+	val dump by session.dumps.collectAsState()
+	val flash = remember { Animatable(0f) }
+	val context = LocalContext.current
+	LaunchedEffect(dump) {
+		val d = dump ?: return@LaunchedEffect
+		if (d.path != null) {
+			Toast.makeText(context, "dump ${d.count} saved: ${d.path.substringAfterLast('/')}", Toast.LENGTH_SHORT).show()
+			flash.snapTo(0.6f)
+			flash.animateTo(0f, tween(400))
+		}
+		else
+			Toast.makeText(context, "dump failed: ${d.error}", Toast.LENGTH_LONG).show()
+	}
 
 	Column(Modifier.fillMaxSize().background(Color.Black)) {
 		// the analysis frames are 4:3 upright (3:4 portrait): the preview box has the same shape, so the overlay maps by
@@ -119,6 +138,8 @@ fun DetectorScreen(session: CameraSession, owner: androidx.lifecycle.LifecycleOw
 						Canvas(Modifier.fillMaxSize()) { drawMini(h.mini) }
 					}
 				}
+			if (flash.value > 0f)
+				Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = flash.value)))
 			snapshot?.let { s ->
 				Box(Modifier.align(Alignment.TopEnd).padding(6.dp).background(Color(0xb0101010)).padding(4.dp)) {
 					CubeNet(s.net, Modifier.width(150.dp).aspectRatio(4f / 3f))
@@ -136,7 +157,7 @@ fun DetectorScreen(session: CameraSession, owner: androidx.lifecycle.LifecycleOw
 				session.useCameraFocal = cameraFocal
 				session.reset(false)
 			}, label = { Text("lens fx") })
-			FilterChip(selected = false, onClick = { session.dump() }, label = { Text("dump") })
+			FilterChip(selected = false, onClick = { session.dump() }, label = { Text(dump?.count?.takeIf { it > 0 }?.let { "dump ($it)" } ?: "dump") })
 		}
 		Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
 			FilterChip(selected = showSamples, onClick = { showSamples = !showSamples }, label = { Text("quads") })
