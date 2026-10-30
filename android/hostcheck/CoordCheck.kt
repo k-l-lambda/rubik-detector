@@ -85,6 +85,10 @@ private fun pct(v: List<Double>, q: Double) = if (v.isEmpty()) Double.NaN else v
 fun main(args: Array<String>) {
 	val dir = File(args[0])
 	val scale = args.getOrNull(1)?.toDouble() ?: 1.0
+	// FIXED="track,detect" ms: each step costs that instead of its measured time (a run independent of the machine's load)
+	val fixed = System.getenv("FIXED")?.split(",")?.map { it.toDouble() }
+	val fixedTrack = fixed?.getOrNull(0)
+	val fixedDetect = fixed?.getOrNull(1)
 	val outDir = args.getOrNull(2)?.takeIf { it.isNotEmpty() && it != "-" }?.let { File(it) }
 	val fxGiven = args.getOrNull(3)?.toDoubleOrNull()
 	val labelFile = dir.resolve("labels.json")
@@ -106,6 +110,7 @@ fun main(args: Array<String>) {
 	System.getenv("BLOCK")?.toDoubleOrNull()?.let { coord.pipeline.settings.reliabilitySeconds = it }
 	System.getenv("CONSENSUS")?.toDoubleOrNull()?.let { coord.pipeline.settings.consensusDelta = it }
 	System.getenv("GAP")?.toDoubleOrNull()?.let { coord.pipeline.settings.minClusterGap = it }
+	System.getenv("LOCK_COVERAGE")?.toIntOrNull()?.let { coord.pipeline.settings.lockCoverage = it }
 	fxGiven?.let { coord.pipeline.useFocal(it) }
 	val detector = Detector()
 	var buffer: ByteBuffer? = null
@@ -161,7 +166,7 @@ fun main(args: Array<String>) {
 			val hud = coord.trackStep(ti.toLong())
 			val ms = (System.nanoTime() - t0) / 1e6
 			trackMs.add(ms)
-			trackerFree = trackerStart + ms * scale / 1000
+			trackerFree = trackerStart + (fixedTrack ?: ms) * scale / 1000
 			pushTime[ti.toLong()] = trackerStart
 			if (hud != null)
 				huds.add(Pair(trackerFree, hud))
@@ -173,7 +178,7 @@ fun main(args: Array<String>) {
 			val snap = coord.detectStep(detector, di)
 			val ms = (System.nanoTime() - t0) / 1e6
 			detectMs.add(ms)
-			detectorFree = detectorStart + ms * scale / 1000
+			detectorFree = detectorStart + (fixedDetect ?: ms) * scale / 1000
 			detectorLast = di
 			if (snap != null) {
 				pending.add(Triple(detectorFree, di, snap))
@@ -181,14 +186,20 @@ fun main(args: Array<String>) {
 				if (System.getenv("PURITY") != null) {
 					// every ~3 s while acquiring: the estimate
 					val e = snap.estimate
-					if (snap.stage.toString() == "ACQUIRE" && e != null && e.ok && (detectorFree / 3).toInt() != lastReport) {
-						lastReport = (detectorFree / 3).toInt()
-						println(String.format("  %6.2f s acquiring: %d/54, legal %b, min confidence %.2f, colours %.0f apart, %s", detectorFree, e.coverage, e.legal,
-							e.minConfidence, snap.clusterGap, if (e.legal) purity(coord.pipeline, e.state!!) else ""))
-					}
 					val prevStage = detections.getOrNull(detections.size - 2)?.third?.stage
+					val truthNext = if (labelFile.exists()) Regex("\"facelets\":\\s*\"([LRDUBF]{54})\"").findAll(labelFile.readText()).map { it.groupValues[1] }.toList().drop(1 + di.toInt()).take(6) else emptyList()
+					val rightNow = { st: String -> if (truthNext.isEmpty()) "" else if (truthNext.any { Cube.faceMap(st, it) != null }) " [= truth]" else " [≠ truth]" }
+					// while acquiring, every REPORT seconds (default 3): the estimate
+					val every = System.getenv("REPORT")?.toDoubleOrNull() ?: 3.0
+					if (snap.stage.toString() == "ACQUIRE" && e != null && e.ok && (detectorFree / every).toInt() != lastReport) {
+						lastReport = (detectorFree / every).toInt()
+						println(String.format("  %6.2f s acquiring: %d/54, legal %b, min confidence %.2f, colours %.0f apart, %s", detectorFree, e.coverage, e.legal,
+							e.minConfidence, snap.clusterGap, if (e.legal) purity(coord.pipeline, e.state!!) + rightNow(e.state!!) else ""))
+					}
 					if (snap.stage.toString() == "FOLLOW" && prevStage?.toString() != "FOLLOW")
-						println(String.format("  %6.2f s locked: ", detectorFree) + purity(coord.pipeline, snap.follow!!.state))
+						println(String.format("  %6.2f s locked: ", detectorFree) + purity(coord.pipeline, snap.follow!!.state) + rightNow(snap.follow!!.state))
+					val prevMoves = detections.getOrNull(detections.size - 2)?.third?.follow?.moves?.size ?: 0
+					snap.follow?.let { f -> if (f.moves.size > prevMoves && snap.stage.toString() == "FOLLOW") println(String.format("  %6.2f s turned %s%s", detectorFree, f.moves.last(), rightNow(f.state))) }
 					if (snap.stage.toString() == "ACQUIRE" && prevStage?.toString() == "FOLLOW")
 						println(String.format("  %6.2f s back to acquiring", detectorFree))
 					snap.events.lastOrNull()?.takeIf { it.contains("layer ") && it != lastDrop }?.let { lastDrop = it; println("  " + it) }
@@ -306,6 +317,25 @@ fun main(args: Array<String>) {
 	for ((ph, e) in byPhase.toSortedMap())
 		println(String.format("  displayed during %-8s: error median %.3f p90 %.3f (%d)", ph, pct(e, 0.5), pct(e, 0.9), e.size))
 	println("  stats: " + coord.stats.toSortedMap())
+	// each hint the pipeline took against the true twist then (a render's labels): its normal vs the turning face's
+	if (labelFile.exists() && System.getenv("PURITY") != null) {
+		val text = labelFile.readText()
+		val video = text.substring(text.lastIndexOf("\"twists\""))
+		val tw = Regex("\"move\":\\s*\"([^\"]+)\"[\\s\\S]*?\"twist\":\\s*\\[\\s*(\\d+),\\s*(\\d+)\\s*\\]").findAll(video)
+			.map { Triple(it.groupValues[1], it.groupValues[2].toInt(), it.groupValues[3].toInt()) }.toList()
+		val views = parseViews(text)
+		val axisOf = mapOf('L' to Pair(0, -1), 'R' to Pair(0, 1), 'D' to Pair(1, -1), 'U' to Pair(1, 1), 'B' to Pair(2, -1), 'F' to Pair(2, 1))
+		for (h in coord.pipeline.hintLog) {
+			val i = (h.start * fps).toInt()
+			val t = tw.minByOrNull { (_, a, b) -> Math.abs((a + b) / 2 - i) }!!
+			val R = views[(h.time * fps).toInt().coerceIn(0, views.size - 1)]
+			val (axis, sign) = axisOf.getValue(t.first[0])
+			val n = DoubleArray(3) { r -> sign * R[r * 3 + axis] }
+			val dot = (0 until 3).sumOf { n[it] * h.normal[it] }
+			println(String.format("  hint at %.2f s (run %.2f–%.2f s) → face %c; nearest true twist %s frames %d–%d; normal · true face %.2f",
+				h.time, h.start, h.end, h.face, t.first, t.second, t.third, dot))
+		}
+	}
 	// the follower's timeline: stage changes, switches, decisions (one line per second while following)
 	if (System.getenv("TIMELINE") != null) {
 		var stage: Any? = null
@@ -341,7 +371,8 @@ fun main(args: Array<String>) {
 				switches.add(d)
 			prev = f.moves.size
 		}
-		val right = { d: Triple<Double, Long, Snapshot> -> truth.getOrNull(1 + d.second.toInt())?.let { Cube.faceMap(d.third.follow!!.state, it) != null } ?: false }
+		// a switch seen within a few frames before the twist's end (the turn all but done) is right
+		val right = { d: Triple<Double, Long, Snapshot> -> (0..5).any { j -> truth.getOrNull(1 + d.second.toInt() + j)?.let { Cube.faceMap(d.third.follow!!.state, it) != null } ?: false } }
 		val delays = ArrayList<Double>()
 		for ((move, start, end) in twists) {
 			val sw = switches.firstOrNull { it.second >= start && right(it) }

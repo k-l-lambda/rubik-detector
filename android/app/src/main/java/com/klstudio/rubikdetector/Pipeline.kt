@@ -43,6 +43,7 @@ class Settings(
 	var reliabilitySeconds: Double = 0.5,
 	var dropCheckFacelets: Int = 4,     // acquire: a turn hint is decided once this many of the layer's facelets are seen before and after
 	var dropChangedShare: Double = 0.4, // …and the layer's evidence dropped if at least this share of them changed colour (else kept)
+	var carrySeconds: Double = 0.8,     // acquire: a chain begun in a hinted turn is placed by the geometry from a good frame this recent
 	var minClusterGap: Double = 12.0,   // lock: the closest two letters' colours (median Lab of their facelets, L halved) at least this apart
 	var conflictNll: Double = 4.0,
 	var maxConflicts: Int = 2,
@@ -136,6 +137,10 @@ class Pipeline(val settings: Settings = Settings()) {
 	private val frames = ArrayList<Detection>()
 	private val rotations = ArrayList<Int>()
 	private val pending = ArrayList<Detection>()
+	private var lastGood: Detection? = null   // the last good detection (prev is cleared on a bad one)
+	// per chain begun with its link broken by colour only: its start time and the placement of its first frame (rel
+	// identity) the geometry carried from the frame before
+	private val carries = HashMap<Int, Pair<Double, Int>>()
 	private var chains = 0
 	private var estimate: Estimate? = null
 	private var estimatedCount = 0
@@ -165,6 +170,7 @@ class Pipeline(val settings: Settings = Settings()) {
 
 	fun reset(keepFocal: Boolean = true) {
 		prev = null
+		lastGood = null
 		costs.clear()
 		clearEvidence()
 		follower = null
@@ -175,6 +181,7 @@ class Pipeline(val settings: Settings = Settings()) {
 	private fun clearEvidence() {
 		droppedUntil = -1.0
 		pendingDrops.clear()
+		carries.clear()
 		frames.clear()
 		rotations.clear()
 		pending.clear()
@@ -350,11 +357,21 @@ class Pipeline(val settings: Settings = Settings()) {
 		else {
 			chains++
 			r.chain = chains
+			// the angle links, only the colours differ: maybe a layer turned between the two. The geometry's placement is
+			// kept for a turn hint (it comes later, see carryTurned): placed by colour the chain takes the rotation hiding
+			// the turn. Detection often fails during the turn itself: then from the last good frame, if recent.
+			val q = p ?: lastGood?.takeIf { time - it.time <= settings.carrySeconds }
+			q?.rotation?.let { qr ->
+				val (angle, h) = Cube.frameMatch(q.R, r.R)
+				if (angle <= settings.linkDeg)
+					carries[chains] = Pair(time, Cube.chain(qr, h))
+			}
 			r.rotation = null
 			r.rel = Cube.identity
 			pending.clear()
 		}
 		prev = r
+		lastGood = r
 		if (stage == Stage.ACQUIRE && fitsWell(r))
 			addEvidence(r)
 		return Pair(r, link)
@@ -446,14 +463,47 @@ class Pipeline(val settings: Settings = Settings()) {
 	// in whole-cube turns and blur, and a dropped layer costs the lock seconds. Once enough of its facelets are seen
 	// before and after the turn, it is dropped if enough of them changed colour, else the hint is discarded.
 	private class PendingDrop(val face: Char, val layer: List<Int>, val end: Double, val made: Double)
+	// debugging: per hint taken (detection time, hint's start / end, normal in that detection's camera frame, face)
+	class HintRecord(val time: Double, val start: Double, val end: Double, val normal: DoubleArray, val face: Char)
+	val hintLog = ArrayList<HintRecord>()
 	private val pendingDrops = ArrayList<PendingDrop>()
+
+	// A chain begun while a hinted layer turned (its link broken by colour only) is placed by the geometry carried over
+	// the turn, not by colour: its frames and the later ones of the chain renamed.
+	private fun carryTurned(hint: TurnHint, time: Double) {
+		val firsts = HashMap<Int, Detection>()
+		for (v in frames)
+			firsts.putIfAbsent(v.chain, v)
+		for ((chain, first) in firsts) {
+			val (start, carry) = carries[chain] ?: continue
+			if (start < hint.start - 0.1 || start > hint.end + 0.5 || first.rotation == Cube.chain(carry, first.rel))
+				continue
+			for (v in frames.indices)
+				if (frames[v].chain == chain) {
+					frames[v].rotation = Cube.chain(carry, frames[v].rel)
+					rotations[v] = frames[v].rotation!!
+				}
+			prev?.takeIf { it.chain == chain }?.let { it.rotation = Cube.chain(carry, it.rel) }
+			stable.clear()
+			estimatedCount = -1
+			event(String.format("chain from %.2f s placed by the geometry over the turn", start), time)
+		}
+	}
 
 	private fun dropTurned(r: Detection?, hint: TurnHint?, time: Double) {
 		if (hint == null || r == null || hint.end <= droppedUntil)
 			return
+		carryTurned(hint, time)
 		val g = r.rotation ?: return
 		val face = faceOf(r, g, hint.normal) ?: return
 		droppedUntil = hint.end
+		hintLog.add(HintRecord(time, hint.start, hint.end, hint.normal, face))
+		// the same run seen again (its end grew): the pending check moves on, no second one
+		pendingDrops.find { it.face == face && hint.start <= it.end + 0.05 }?.let { p ->
+			pendingDrops.remove(p)
+			pendingDrops.add(PendingDrop(p.face, p.layer, hint.end, p.made))
+			return
+		}
 		pendingDrops.add(PendingDrop(face, MiniCube.layer(Cube.FACES.indexOf(face)), hint.end, time))
 		event("layer $face seen turning: checking its colours", time)
 	}
