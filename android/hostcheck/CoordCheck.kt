@@ -111,6 +111,7 @@ fun main(args: Array<String>) {
 	System.getenv("CONSENSUS")?.toDoubleOrNull()?.let { coord.pipeline.settings.consensusDelta = it }
 	System.getenv("GAP")?.toDoubleOrNull()?.let { coord.pipeline.settings.minClusterGap = it }
 	System.getenv("LOCK_COVERAGE")?.toIntOrNull()?.let { coord.pipeline.settings.lockCoverage = it }
+	System.getenv("LINK_DEG")?.toDoubleOrNull()?.let { coord.pipeline.settings.linkDeg = it }
 	fxGiven?.let { coord.pipeline.useFocal(it) }
 	val detector = Detector()
 	var buffer: ByteBuffer? = null
@@ -146,6 +147,7 @@ fun main(args: Array<String>) {
 	val trackMs = ArrayList<Double>()
 	var lastDrop = ""
 	var lastReport = -1
+	var lastChainReport = -1
 	val detectMs = ArrayList<Double>()
 	while (true) {
 		var ti = Math.floor((trackerFree - camera) * fps + 1e-9).toInt()
@@ -195,6 +197,48 @@ fun main(args: Array<String>) {
 						lastReport = (detectorFree / every).toInt()
 						println(String.format("  %6.2f s acquiring: %d/54, legal %b, min confidence %.2f, colours %.0f apart, %s", detectorFree, e.coverage, e.legal,
 							e.minConfidence, snap.clusterGap, if (e.legal) purity(coord.pipeline, e.state!!) + rightNow(e.state!!) else ""))
+					}
+					// CHAINS: at each report and the lock, per evidence chain where its placement puts the true centres
+					// (centres never move in face turns: one map for every rightly placed chain)
+					val chainReport = {
+						val viewsAll = parseViews(labelFile.readText())
+						val byChain = java.util.TreeMap<Int, HashMap<Int, HashMap<Int, Int>>>()
+						val byCarry = HashMap<Int, HashMap<Int, HashMap<Int, Int>>>()
+						val first = HashMap<Int, Double>()
+						for ((v, rot) in coord.pipeline.evidence()) {
+							coord.pipeline.carryOf(v.chain)?.let { carry ->
+								val vt = viewsAll.getOrNull(Math.round(v.time * fps).toInt())
+								if (vt != null) {
+									val (_, g) = Cube.frameMatch(v.R, vt)
+									val inv = IntArray(54)
+									Cube.perms[g].forEachIndexed { a2, b2 -> inv[b2] = a2 }
+									for (j in listOf(13, 31, 49))
+										byCarry.getOrPut(v.chain) { HashMap() }.getOrPut(Cube.perms[Cube.chain(carry, v.rel)][j]) { HashMap() }.merge(inv[j], 1, Int::plus)
+								}
+							}
+							val vt = viewsAll.getOrNull(Math.round(v.time * fps).toInt()) ?: continue
+							val (_, g) = Cube.frameMatch(v.R, vt)
+							val inv = IntArray(54)
+							Cube.perms[g].forEachIndexed { a2, b2 -> inv[b2] = a2 }
+							first.putIfAbsent(v.chain, v.time)
+							for (j in listOf(13, 31, 49))
+								byChain.getOrPut(v.chain) { HashMap() }.getOrPut(Cube.perms[rot][j]) { HashMap() }.merge(inv[j], 1, Int::plus)
+						}
+						val majority = HashMap<Int, HashMap<Int, Int>>()
+						byChain.values.forEach { m -> m.forEach { (c, t) -> t.forEach { (k, n) -> majority.getOrPut(c) { HashMap() }.merge(k, n, Int::plus) } } }
+						val best = majority.mapValues { (_, t) -> t.maxByOrNull { it.value }!!.key }
+						for ((chain, m) in byChain) {
+							val wrong = m.entries.sumOf { (c, t) -> t.filterKeys { it != best[c] }.values.sum() }
+							val all = m.values.sumOf { it.values.sum() }
+							val carried = byCarry[chain]?.let { mc -> mc.entries.sumOf { (c, t) -> t.filterKeys { it != best[c] }.values.sum() } }
+							println(String.format("      chain %d from %.2f s: %d centre sightings, %d off the majority map%s%s", chain, first[chain], all, wrong,
+								if (carried == null) ", no carry" else if (carried == wrong && coord.pipeline.carryOf(chain).let { cc -> m.isNotEmpty() }) ", carry: $carried off" else ", carry: $carried off", if (wrong > 0) "  ← misplaced" else ""))
+						}
+					}
+					if (System.getenv("CHAINS") != null && snap.stage.toString() == "ACQUIRE" && (detectorFree / 1.0).toInt() != lastChainReport) {
+						lastChainReport = (detectorFree / 1.0).toInt()
+						println(String.format("    %6.2f s chains:", detectorFree))
+						chainReport()
 					}
 					if (snap.stage.toString() == "FOLLOW" && prevStage?.toString() != "FOLLOW")
 						println(String.format("  %6.2f s locked: ", detectorFree) + purity(coord.pipeline, snap.follow!!.state) + rightNow(snap.follow!!.state))

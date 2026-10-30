@@ -24,11 +24,11 @@ class Settings(
 	var fallbackCost: Double = 0.15,
 	var evidenceCost: Double = 0.09,
 	var relativeCost: Double = 1.5,
-	var linkDeg: Double = 20.0,
+	var linkDeg: Double = 30.0,       // a detection links to the last one turned at most this far (hand-held: 20 broke chains, misplaced by colour)
 	var agreeColour: Double = 12.0,
 	var legalFrom: Int = 45,
 	var lockConfidence: Double = 0.99,
-	var lockCoverage: Int = 54,
+	var lockCoverage: Int = 51,       // facelets observed to lock (the rest from legality); hand-held turning leaves a few unseen
 	var lockStable: Int = 3,
 	var moveCost: Double = 10.0,
 	var switchMargin: Double = 15.0,
@@ -360,9 +360,11 @@ class Pipeline(val settings: Settings = Settings()) {
 			// the angle links, only the colours differ: maybe a layer turned between the two. The geometry's placement is
 			// kept for a turn hint (it comes later, see carryTurned): placed by colour the chain takes the rotation hiding
 			// the turn. Detection often fails during the turn itself: then from the last good frame, if recent.
+			// (a frame of a chain not placed yet: by its own carried placement)
 			val q = p ?: lastGood?.takeIf { time - it.time <= settings.carrySeconds }
-			q?.rotation?.let { qr ->
-				val (angle, h) = Cube.frameMatch(q.R, r.R)
+			val qRotation = q?.let { f -> f.rotation ?: carries[f.chain]?.let { Cube.chain(it.second, f.rel) } }
+			qRotation?.let { qr ->
+				val (angle, h) = Cube.frameMatch(q!!.R, r.R)
 				if (angle <= settings.linkDeg)
 					carries[chains] = Pair(time, Cube.chain(qr, h))
 			}
@@ -628,6 +630,10 @@ class Pipeline(val settings: Settings = Settings()) {
 			Colors.labToArgb(m)
 		}
 	}
+
+	// the evidence frames and their placements, a chain's carried placement (host checks)
+	fun evidence(): List<Pair<Detection, Int>> = frames.indices.map { Pair(frames[it], rotations[it]) }
+	fun carryOf(chain: Int): Int? = carries[chain]?.second
 
 	// the observations behind the current estimate, per common facelet (Lab)
 	fun observations(): List<List<FloatArray>> {
