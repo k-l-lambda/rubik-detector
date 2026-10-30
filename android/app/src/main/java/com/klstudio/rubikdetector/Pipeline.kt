@@ -50,6 +50,9 @@ class Settings(
 	var globalAfter: Int = 3,
 	var maxEvidence: Int = 200,
 	var workWidth: Int = 1024,
+	// wide detection: cube-axes hypotheses (the engine's 8 suit photos; on a phone a frame that fails tries all 8 — 10 s on
+	// a OnePlus 5T — and the next frame tries again anyway: real video p90 745 → 457 ms on the desktop, accepted 78 → 76/109)
+	var axisHypotheses: Int = 2,
 	var keepSegments: Boolean = true,
 	var presenceThreshold: Double = 0.5,
 	var provisionalFocal: Double = 1.0,
@@ -209,7 +212,7 @@ class Pipeline(val settings: Settings = Settings()) {
 		if (stage == Stage.FOCAL) {
 			// no focal estimate on a frame without a cube: it would fit the scene's lines
 			val provisional = settings.provisionalFocal * maxOf(frame.width, frame.height)
-			val probe = timed({ tFirst += it }) { detector.detect(frame, provisional, null, settings.workWidth, settings.keepSegments) }
+			val probe = timed({ tFirst += it }) { detector.detect(frame, provisional, null, settings.workWidth, settings.keepSegments, settings.axisHypotheses) }
 			probe.mode = "probe"
 			probe.time = time
 			if (probe.presence < settings.presenceThreshold)
@@ -325,7 +328,7 @@ class Pipeline(val settings: Settings = Settings()) {
 			mode = "local"
 		}
 		if (r == null || !r.ok || r.latticeCost > settings.fallbackCost || r.presence < settings.presenceThreshold) {
-			r = timed({ if (prior != null) tRetry += it else tFirst += it }) { detector.detect(frame, fx, null, settings.workWidth, settings.keepSegments) }
+			r = timed({ if (prior != null) tRetry += it else tFirst += it }) { detector.detect(frame, fx, null, settings.workWidth, settings.keepSegments, settings.axisHypotheses) }
 			mode = if (mode == "local") "fallback" else "wide"
 		}
 		r.mode = mode

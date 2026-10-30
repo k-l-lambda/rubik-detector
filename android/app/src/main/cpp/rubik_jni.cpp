@@ -108,13 +108,15 @@ JNIEXPORT jdoubleArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeSetF
 // sampling), totalMs, sampleCount, per sample (facelet, valid, L, a, b, quad 8) = 13, segmentCount2, per segment
 // (x1, y1, x2, y2, weight, family) = 6, presence, faceCoverage (3).
 JNIEXPORT jdoubleArray JNICALL Java_com_klstudio_rubikdetector_Engine_nativeDetect (JNIEnv* env, jclass, jlong h, jint width, jint height,
-	jdouble fx, jdouble fy, jdouble cx, jdouble cy, jdoubleArray prior, jint workWidth, jboolean keepSegments) {
+	jdouble fx, jdouble fy, jdouble cx, jdouble cy, jdoubleArray prior, jint workWidth, jboolean keepSegments, jint axisHypotheses) {
 	Handle* H = handle(h);
 	auto t0 = std::chrono::steady_clock::now();
 	Image image{H->upright.data(), width, height, width * 4, PixelFormat::RGBA};
 	Camera camera{fx, fy, cx, cy};
 	DetectOptions options;
 	options.workWidth = workWidth;
+	if (axisHypotheses > 0)
+		options.axisHypotheses = axisHypotheses;
 	options.keepSegments = keepSegments;
 	if (prior) {
 		jdouble* p = env->GetDoubleArrayElements(prior, nullptr);

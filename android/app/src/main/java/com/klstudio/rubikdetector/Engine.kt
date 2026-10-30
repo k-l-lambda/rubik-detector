@@ -80,7 +80,7 @@ object Engine {
 	@JvmStatic external fun nativeDestroy(handle: Long)
 	@JvmStatic external fun nativeSetFrame(handle: Long, buffer: ByteBuffer, width: Int, height: Int, stride: Int, rotation: Int): DoubleArray
 	@JvmStatic external fun nativeDetect(handle: Long, width: Int, height: Int, fx: Double, fy: Double, cx: Double, cy: Double,
-		prior: DoubleArray?, workWidth: Int, keepSegments: Boolean): DoubleArray
+		prior: DoubleArray?, workWidth: Int, keepSegments: Boolean, axisHypotheses: Int): DoubleArray
 	@JvmStatic external fun nativeEstimateFocal(handle: Long, width: Int, height: Int): DoubleArray
 	@JvmStatic external fun nativeEstimate(samples: DoubleArray, counts: IntArray, rotations: IntArray, groups: IntArray?, legal: Boolean,
 		partial: Boolean, reliability: Boolean): DoubleArray
@@ -193,9 +193,10 @@ class Detector : AutoCloseable {
 		return FrameInfo(o[0].toInt(), o[1].toInt(), o[2])
 	}
 
-	fun detect(frame: FrameInfo, fx: Double, prior: Pair<DoubleArray, DoubleArray>?, workWidth: Int = 1024, keepSegments: Boolean = false): Detection {
+	// axisHypotheses: cube-axes hypotheses in a wide search (0: the engine's default)
+	fun detect(frame: FrameInfo, fx: Double, prior: Pair<DoubleArray, DoubleArray>?, workWidth: Int = 1024, keepSegments: Boolean = false, axisHypotheses: Int = 0): Detection {
 		val p = prior?.let { (R, t) -> R + t }
-		val o = Engine.nativeDetect(handle, frame.width, frame.height, fx, fx, 0.0, 0.0, p, workWidth, keepSegments)
+		val o = Engine.nativeDetect(handle, frame.width, frame.height, fx, fx, 0.0, 0.0, p, workWidth, keepSegments, axisHypotheses)
 		var i = 5
 		val R = DoubleArray(9) { o[i++] }
 		val t = DoubleArray(3) { o[i++] }
