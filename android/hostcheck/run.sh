@@ -24,7 +24,7 @@ KOTLINC_CP=${KOTLINC_CP:-$(find $C/org.jetbrains.kotlin/kotlin-compiler-embeddab
 
 if [ ! -f "$OUT/librubik_jni.so" ] || [ -n "$(find "$ROOT/engine/src" "$ROOT/engine/include" "$ROOT/android/app/src/main/cpp" -newer "$OUT/librubik_jni.so" -name "*.*pp")" ]; then
 	echo "building librubik_jni.so (host)"
-	g++ -std=c++17 -O2 -fPIC -shared -ffp-contract=off -I"$JNI_INCLUDE" -I"$JNI_INCLUDE/linux" -I"$ROOT/engine/include" -I"$ROOT/engine/src" \
+	g++ -std=c++17 -O2 -fPIC -shared -pthread -ffp-contract=off -I"$JNI_INCLUDE" -I"$JNI_INCLUDE/linux" -I"$ROOT/engine/include" -I"$ROOT/engine/src" \
 		"$ROOT"/engine/src/*.cpp "$ROOT/android/app/src/main/cpp/rubik_jni.cpp" -o "$OUT/librubik_jni.so"
 fi
 SRC="$ROOT/android/app/src/main/java/com/klstudio/rubikdetector"

@@ -62,11 +62,16 @@ class Hud(
 class RawFrame(var buffer: ByteBuffer, var width: Int, var height: Int, var stride: Int, var rotation: Int, var time: Double, var index: Long)
 
 class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: Pipeline = Pipeline()) {
+	init {
+		pipeline.carryRotation = { R, from, to -> carryRotation(R, from, to) }
+	}
+
 	private val tracker = Tracker()
 	private val ring = arrayOfNulls<RawFrame>(settings.ring)
 	// the frames handed to the detector, kept until their detection is applied (a detection can outlast the ring)
 	private val pinned = LinkedHashMap<Long, RawFrame>()
 	private val history = LinkedHashMap<Long, Pair<Track, FrameInfo>>()   // tracked frames by index (facing poses)
+	private val historyTime = HashMap<Long, Double>()                    // their capture times
 	private val outcomes = ArrayList<Pair<Long, Snapshot>>()            // detections finished, not applied yet
 	private var seeded = false
 	private var lastTracked = -1L
@@ -319,7 +324,7 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 		lastTracked = index
 		if (seeded) {
 			if (track.ok) {
-				remember(index, track, frame)
+				remember(index, track, frame, time)
 				everTracked = true
 				val map = viewMap
 				val from = viewMapR
@@ -355,12 +360,41 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 		return hud(index, time, frame, if (seeded) track else null, (System.nanoTime() - started) / 1e6, msApply)
 	}
 
-	private fun remember(index: Long, track: Track, frame: FrameInfo) {
+	private fun remember(index: Long, track: Track, frame: FrameInfo, time: Double) {
 		synchronized(history) {
 			history[index] = Pair(track, frame)
-			while (history.size > settings.historyLength)
-				history.remove(history.keys.first())
+			historyTime[index] = time
+			while (history.size > settings.historyLength) {
+				val oldest = history.keys.first()
+				history.remove(oldest)
+				historyTime.remove(oldest)
+			}
 		}
+	}
+
+	// A pose R (cube frame named as at time `from`) moved on to time `to` by the tracked motion between them, in R's
+	// naming: between two detections the cube can turn 80° in 0.3 s (v104), past the 45° where matching the two poses
+	// directly takes the wrong renaming; the tracker's frames are ~10° apart, where the renaming from frame to frame is
+	// unambiguous. Null without healthy tracked frames at both ends or with a step over 30°.
+	fun carryRotation(R: DoubleArray, from: Double, to: Double): DoubleArray? {
+		val frames = synchronized(history) {
+			history.entries.mapNotNull { (k, v) -> historyTime[k]?.let { t -> Pair(t, v.first) } }
+		}.filter { (t, tr) -> t >= from - 1e-6 && t <= to + 1e-6 && tr.ok }.sortedBy { it.first }
+		if (frames.size < 2 || Math.abs(frames.first().first - from) > 0.04 || Math.abs(frames.last().first - to) > 0.04)
+			return null
+		// R against the first tracked pose: the renaming between them (the same instant)
+		val (a0, g0) = Cube.frameMatch(frames[0].second.R, R)
+		if (a0 > 30)
+			return null
+		// the renaming N carried from frame to frame: tracked pose i in the first one's naming is T_i · N_i
+		var N = DoubleArray(9) { if (it % 4 == 0) 1.0 else 0.0 }
+		for (i in 1 until frames.size) {
+			val (angle, g) = Cube.frameMatch(frames[i - 1].second.R, frames[i].second.R)
+			if (angle > 30)
+				return null
+			N = Cube.mul(Cube.transpose(Cube.rotations[g].map { it.toDouble() }.toDoubleArray()), N)
+		}
+		return Cube.mul(Cube.mul(frames.last().second.R, N), Cube.rotations[g0].map { it.toDouble() }.toDoubleArray())
 	}
 
 	// a pose detected at frame k moved on to frame m by the tracker's motion k → m (camera frame). The two tracked poses
@@ -502,7 +536,8 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 			else (1..settings.catchUpSteps).map { held[(it * held.size) / settings.catchUpSteps - 1] }
 		var ok = true
 		for (i in steps) {
-			val fi = withFrame(i) { f -> tracker.setFrame(f.buffer, f.width, f.height, f.stride, f.rotation) }
+			var ti = 0.0
+			val fi = withFrame(i) { f -> ti = f.time; tracker.setFrame(f.buffer, f.width, f.height, f.stride, f.rotation) }
 			if (fi == null) {
 				ok = false
 				break
@@ -512,7 +547,7 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 				ok = false
 				break
 			}
-			remember(i, tr, fi)
+			remember(i, tr, fi, ti)
 		}
 		seeded = ok
 		count(if (ok) "caught up" else "catch-up failed")
@@ -565,7 +600,7 @@ class Coordinator(val settings: TrackSettings = TrackSettings(), val pipeline: P
 		noCube = 0
 		disagreements = 0
 		tracker.reset()
-		synchronized(history) { history.clear() }
+		synchronized(history) { history.clear(); historyTime.clear() }
 		synchronized(outcomes) { outcomes.clear() }
 	}
 

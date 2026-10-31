@@ -112,6 +112,7 @@ fun main(args: Array<String>) {
 	System.getenv("GAP")?.toDoubleOrNull()?.let { coord.pipeline.settings.minClusterGap = it }
 	System.getenv("LOCK_COVERAGE")?.toIntOrNull()?.let { coord.pipeline.settings.lockCoverage = it }
 	System.getenv("LINK_DEG")?.toDoubleOrNull()?.let { coord.pipeline.settings.linkDeg = it }
+	System.getenv("LOCK_STABLE")?.toIntOrNull()?.let { coord.pipeline.settings.lockStable = it }
 	fxGiven?.let { coord.pipeline.useFocal(it) }
 	val detector = Detector()
 	var buffer: ByteBuffer? = null

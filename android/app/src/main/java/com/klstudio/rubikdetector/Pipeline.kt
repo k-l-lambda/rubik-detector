@@ -29,7 +29,7 @@ class Settings(
 	var legalFrom: Int = 45,
 	var lockConfidence: Double = 0.99,
 	var lockCoverage: Int = 51,       // facelets observed to lock (the rest from legality); hand-held turning leaves a few unseen
-	var lockStable: Int = 3,
+	var lockStable: Int = 2,           // sure estimates of one state in a row (v104 at 400 ms detections: 3 came 1.2 s apart around a whole-cube turn and never in a row)
 	var moveCost: Double = 10.0,
 	var switchMargin: Double = 15.0,
 	var strongMargin: Double = 80.0,
@@ -44,6 +44,7 @@ class Settings(
 	var dropCheckFacelets: Int = 4,     // acquire: a turn hint is decided once this many of the layer's facelets are seen before and after
 	var dropChangedShare: Double = 0.4, // …and the layer's evidence dropped if at least this share of them changed colour (else kept)
 	var carrySeconds: Double = 0.8,     // acquire: a chain begun in a hinted turn is placed by the geometry from a good frame this recent
+	var trackedCarrySeconds: Double = 2.0, // …with a tracker: from a placed frame this recent the tracked frames lead from
 	var minClusterGap: Double = 12.0,   // lock: the closest two letters' colours (median Lab of their facelets, L halved) at least this apart
 	var conflictNll: Double = 4.0,
 	var maxConflicts: Int = 2,
@@ -144,6 +145,9 @@ class Pipeline(val settings: Settings = Settings()) {
 	// per chain begun with its link broken by colour only: its start time and the placement of its first frame (rel
 	// identity) the geometry carried from the frame before
 	private val carries = HashMap<Int, Pair<Double, Int>>()
+	// a pose R named as at time `from`, moved on to time `to` without renaming aliases (the coordinator's tracked
+	// frames); null: not known, the two detections matched directly
+	var carryRotation: ((R: DoubleArray, from: Double, to: Double) -> DoubleArray?)? = null
 	private var chains = 0
 	private var estimate: Estimate? = null
 	private var estimatedCount = 0
@@ -362,14 +366,38 @@ class Pipeline(val settings: Settings = Settings()) {
 			r.chain = chains
 			// the angle links, only the colours differ: maybe a layer turned between the two. The geometry's placement is
 			// kept for a turn hint (it comes later, see carryTurned): placed by colour the chain takes the rotation hiding
-			// the turn. Detection often fails during the turn itself: then from the last good frame, if recent.
-			// (a frame of a chain not placed yet: by its own carried placement)
-			val q = p ?: lastGood?.takeIf { time - it.time <= settings.carrySeconds }
-			val qRotation = q?.let { f -> f.rotation ?: carries[f.chain]?.let { Cube.chain(it.second, f.rel) } }
-			qRotation?.let { qr ->
-				val (angle, h) = Cube.frameMatch(q!!.R, r.R)
-				if (angle <= settings.linkDeg)
-					carries[chains] = Pair(time, Cube.chain(qr, h))
+			// the turn. Detection often fails during the turn itself: then from an earlier frame.
+			val placedOf = { f: Detection -> f.rotation ?: carries[f.chain]?.let { Cube.chain(it.second, f.rel) } }
+			val tracked = carryRotation
+			if (tracked != null) {
+				// with a tracker: the newest placed frame within trackedCarrySeconds whose pose the tracked frames carry here.
+				// Matching two detections directly aliases past 45° (v104: a 78.5° whole-cube turn in 0.3 s read as 14.9°),
+				// and a chain begun without a placement left the next one without one (placed by colour, wrong)
+				val candidates = sequence {
+					p?.let { yield(it) }
+					lastGood?.let { yield(it) }
+					for (v in frames.indices.reversed())
+						yield(frames[v])
+				}
+				for (f in candidates) {
+					if (time - f.time > settings.trackedCarrySeconds)
+						break
+					val fr = placedOf(f) ?: continue
+					val moved = tracked(f.R, f.time, time) ?: continue
+					val (angle, h) = Cube.frameMatch(moved, r.R)
+					if (angle <= settings.linkDeg)
+						carries[chains] = Pair(time, Cube.chain(fr, h))
+					break
+				}
+			}
+			else {
+				// no tracker: the frame before (or the last good one, if recent), matched directly
+				val q = p ?: lastGood?.takeIf { time - it.time <= settings.carrySeconds }
+				q?.let(placedOf)?.let { qr ->
+					val (angle, h) = Cube.frameMatch(q.R, r.R)
+					if (angle <= settings.linkDeg)
+						carries[chains] = Pair(time, Cube.chain(qr, h))
+				}
 			}
 			r.rotation = null
 			r.rel = Cube.identity
@@ -610,6 +638,8 @@ class Pipeline(val settings: Settings = Settings()) {
 		if (sure && (stable.isEmpty() || stable.last() == e.state))
 			stable.add(e.state!!)
 		else {
+			// a less sure estimate resets too: on v104 the dip (0.977) is a turn starting, and the state before it locked
+			// without the reset (wrong)
 			stable.clear()
 			if (sure)
 				stable.add(e.state!!)
