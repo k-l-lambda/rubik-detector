@@ -1,9 +1,12 @@
 // Internal stages of the engine (ports of the rubik_detector Python modules). Working-image pixels throughout.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <random>
+#include <thread>
 #include <vector>
 
 #include "cube.hpp"
@@ -44,6 +47,42 @@ bool lucasKanade (const GreyPyramid& a, const GreyPyramid& b, float x, float y, 
 // robust pose refinement from R, t; inlier mask and median inlier reprojection error
 bool refinePose (const Intrinsics& K, const std::vector<V3>& object, const std::vector<std::array<double, 2>>& image, M3& R, V3& t,
 	const TrackOptions& o, std::vector<bool>& inlier, double& medianError);
+
+// --- threads -------------------------------------------------------------------------------------------------------
+
+// worker threads for the pure per-image stages (the LSD sources, the Lab conversion): results are written to their own
+// slots and merged in a fixed order, so a detection is the same on any number of threads. 4 at most: a phone's camera
+// and tracker threads need cores too.
+inline int workerThreads () {
+	// RK_THREADS: an override for benchmarks (1 = all on the calling thread)
+	static const int n = [] {
+		const char* env = std::getenv("RK_THREADS");
+		int t = env ? std::atoi(env) : 0;
+		return t > 0 ? t : std::max(1, std::min(4, int(std::thread::hardware_concurrency())));
+	}();
+	return n;
+}
+
+// f(i) for i in [0, n) on up to workerThreads() threads (the calling one among them), each taking a contiguous run
+template <class F>
+void parallelFor (int n, F f) {
+	const int t = std::min(n, workerThreads());
+	if (t <= 1) {
+		for (int i = 0; i < n; i++)
+			f(i);
+		return;
+	}
+	std::vector<std::thread> pool;
+	auto run = [&](int k) {
+		for (int i = n * k / t; i < n * (k + 1) / t; i++)
+			f(i);
+	};
+	for (int k = 1; k < t; k++)
+		pool.emplace_back(run, k);
+	run(0);
+	for (std::thread& th : pool)
+		th.join();
+}
 
 // --- imaging (imaging.cpp) ----------------------------------------------------------------------------------------
 

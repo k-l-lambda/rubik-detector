@@ -16,11 +16,15 @@ add_library(rubik_engine STATIC
 	src/capi.cpp src/classify.cpp src/cube.cpp src/engine.cpp src/geometry.cpp src/imaging.cpp
 	src/imgproc.cpp src/legal.cpp src/lsd.cpp src/state.cpp src/track.cpp)
 target_include_directories(rubik_engine PUBLIC include PRIVATE src)
+# worker threads (parallelFor in internal.hpp)
+find_package(Threads REQUIRED)
+target_link_libraries(rubik_engine PUBLIC Threads::Threads)
 
 # shared library for ctypes (python/rubik_engine.py) and FFI
 add_library(rubik_engine_shared SHARED $<TARGET_OBJECTS:rubik_engine>)
 set_target_properties(rubik_engine_shared PROPERTIES OUTPUT_NAME rubik_engine)
 target_include_directories(rubik_engine_shared PUBLIC include)
+target_link_libraries(rubik_engine_shared PRIVATE Threads::Threads)
 
 add_executable(rubik_engine_tests tests/tests.cpp)
 target_link_libraries(rubik_engine_tests rubik_engine)

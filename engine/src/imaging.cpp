@@ -1,3 +1,4 @@
+#include <array>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -63,16 +64,16 @@ namespace {
 
 // sRGB → linear via a 256-entry table (inputs are 8-bit), D65 white, the CIE formulas with OpenCV's constants
 const float* linearTable () {
-	static float lin[256];
-	static bool ready = false;
-	if (!ready) {
+	// a function-local static: initialised once, safe from the worker threads
+	static const std::array<float, 256> lin = [] {
+		std::array<float, 256> t{};
 		for (int i = 0; i < 256; i++) {
 			double c = i / 255.0;
-			lin[i] = float(c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4));
+			t[i] = float(c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4));
 		}
-		ready = true;
-	}
-	return lin;
+		return t;
+	}();
+	return lin.data();
 }
 
 inline void labOf (const float* lin, int b, int g, int r, float* d) {
@@ -95,9 +96,13 @@ LabImage toLab (const Gray8 planes[3]) {
 	out.width = planes[0].width;
 	out.height = planes[0].height;
 	out.data.resize(size_t(out.width) * out.height * 3);
-	const size_t n = size_t(out.width) * out.height;
-	for (size_t i = 0; i < n; i++)
-		labOf(lin, planes[0].data[i], planes[1].data[i], planes[2].data[i], out.data.data() + i * 3);
+	// by rows on the worker threads (per pixel: the same result on any number)
+	const int W = out.width, H = out.height;
+	const int bands = 16;
+	parallelFor(bands, [&](int b) {
+		for (size_t i = size_t(H * b / bands) * W; i < size_t(H * (b + 1) / bands) * W; i++)
+			labOf(lin, planes[0].data[i], planes[1].data[i], planes[2].data[i], out.data.data() + i * 3);
+	});
 	return out;
 }
 

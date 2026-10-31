@@ -110,8 +110,11 @@ Segments detectSegments (const Gray8& gray, const LabImage& lab, const Gray8 pla
 	Segments out;
 	const double minLength = 0.012 * std::max(w, h);
 	const Gray8* sources[4] = {&gray, &chans[0], &chans[1], &chans[2]};
-	for (const Gray8* src : sources) {
-		for (const LsdSegment& s : detectLineSegments(*src)) {
+	// the four LSD runs on the worker threads, their segments taken in source order (as one thread would)
+	std::vector<LsdSegment> found[4];
+	parallelFor(4, [&](int k) { found[k] = detectLineSegments(*sources[k]); });
+	for (const auto& lines : found) {
+		for (const LsdSegment& s : lines) {
 			double x1 = s.x1, y1 = s.y1, x2 = s.x2, y2 = s.y2;
 			double length = std::hypot(x2 - x1, y2 - y1);
 			if (!(length >= minLength))
@@ -542,9 +545,14 @@ PoseFit fromCells (const Intrinsics& K, const M3& R, const LatticeInput& in, con
 		search.lzLo = coarse.lzLo = lo - DEPTH_MARGIN;
 		search.lzHi = coarse.lzHi = hi + DEPTH_MARGIN;
 	}
+	// the coarse scan (most of a wide search: ~14 000 cells on a 960 × 1280 frame) on the worker threads, each cell's
+	// cost in its own slot
 	std::vector<double> costs(cells.size());
-	for (size_t i = 0; i < cells.size(); i++)
-		costs[i] = coarse.cost(cells[i], R, 0.5);
+	const int bands = 32;
+	parallelFor(bands, [&](int k) {
+		for (size_t i = cells.size() * k / bands; i < cells.size() * (k + 1) / bands; i++)
+			costs[i] = coarse.cost(cells[i], R, 0.5);
+	});
 	std::vector<size_t> ranked(cells.size());
 	std::iota(ranked.begin(), ranked.end(), 0);
 	std::stable_sort(ranked.begin(), ranked.end(), [&](size_t a, size_t b) { return costs[a] < costs[b]; });
