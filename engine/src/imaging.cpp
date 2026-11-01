@@ -149,6 +149,42 @@ float median (std::vector<float>& v) {
 
 }
 
+// the median Lab of the pixels in `outer` but not in `inner` (a centre cap's ring around its printed logo); false with
+// fewer than 3 such pixels
+bool sampleRing (const LabImage& lab, const std::array<double, 8>& outer, const std::array<double, 8>& inner, std::array<float, 3>& out, int& pixels) {
+	const int w = lab.width, h = lab.height;
+	auto inside = [](const std::array<double, 8>& q, double x, double y) {
+		double area = 0;
+		for (int i = 0; i < 4; i++)
+			area += q[2 * i] * q[2 * ((i + 1) % 4) + 1] - q[2 * ((i + 1) % 4)] * q[2 * i + 1];
+		double sgn = area >= 0 ? 1 : -1;
+		for (int i = 0; i < 4; i++) {
+			int j = (i + 1) % 4;
+			if (sgn * ((q[2 * j] - q[2 * i]) * (y - q[2 * i + 1]) - (q[2 * j + 1] - q[2 * i + 1]) * (x - q[2 * i])) < 0)
+				return false;
+		}
+		return true;
+	};
+	double minX = std::min({outer[0], outer[2], outer[4], outer[6]}), maxX = std::max({outer[0], outer[2], outer[4], outer[6]});
+	double minY = std::min({outer[1], outer[3], outer[5], outer[7]}), maxY = std::max({outer[1], outer[3], outer[5], outer[7]});
+	int x0 = std::max(int(std::floor(minX)), 0), y0 = std::max(int(std::floor(minY)), 0);
+	int x1 = std::min(int(std::ceil(maxX)) + 1, w), y1 = std::min(int(std::ceil(maxY)) + 1, h);
+	std::vector<float> c[3];
+	for (int y = y0; y < y1; y++)
+		for (int x = x0; x < x1; x++)
+			if (inside(outer, x, y) && !inside(inner, x, y)) {
+				const float* p = lab.at(x, y);
+				for (int k = 0; k < 3; k++)
+					c[k].push_back(p[k]);
+			}
+	pixels = int(c[0].size());
+	if (pixels < 3)
+		return false;
+	for (int k = 0; k < 3; k++)
+		out[k] = median(c[k]);
+	return true;
+}
+
 bool sampleQuad (const LabImage& lab, const std::array<double, 8>& quad, std::array<float, 3>& out, int& pixels) {
 	const int w = lab.width, h = lab.height;
 	float q[8];

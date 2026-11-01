@@ -35,12 +35,24 @@ M3 poseR (const Pose& p) {
 	return R;
 }
 
+// a centre's colour from the ring between the sample quad and CENTRE_RING of the cubie: centre caps often carry a
+// printed logo in the middle (a phone dump: white centre sampled as Lab 61 −9 −23, its ring 93 −2 6), and the
+// centres seed the colour clusters
+const double CENTRE_RING = 0.8;
+
 std::vector<FaceletSample> sampleAt (const LabImage& lab, const Intrinsics& K, const M3& R, V3 t, double sampleSize, double s) {
 	std::vector<FaceletSample> out;
+	const auto rings = faceletQuads(K, R, t, std::max(CENTRE_RING, sampleSize));
 	for (const auto& [k, q] : faceletQuads(K, R, t, sampleSize)) {
 		FaceletSample fs;
 		fs.facelet = k;
-		fs.valid = sampleQuad(lab, q, fs.lab, fs.pixels);
+		fs.valid = false;
+		if (k % 9 == 4 && CENTRE_RING > sampleSize)
+			for (const auto& [kr, qr] : rings)
+				if (kr == k)
+					fs.valid = sampleRing(lab, qr, q, fs.lab, fs.pixels);
+		if (!fs.valid)
+			fs.valid = sampleQuad(lab, q, fs.lab, fs.pixels);
 		for (int i = 0; i < 8; i++)
 			fs.quad[i] = float(q[i] / s);
 		out.push_back(fs);

@@ -100,6 +100,7 @@ LabImage toLabWithin (const Gray8 planes[3], const std::vector<std::array<int, 4
 Gray8 toGray (const Gray8 planes[3]);
 // median Lab inside a quad (4 corners), as colors.sample; returns false if it covers no pixel inside the image
 bool sampleQuad (const LabImage& lab, const std::array<double, 8>& quad, std::array<float, 3>& out, int& pixels);
+bool sampleRing (const LabImage& lab, const std::array<double, 8>& outer, const std::array<double, 8>& inner, std::array<float, 3>& out, int& pixels);
 
 // the colour feature of colors.weigh
 std::array<double, 4> weigh (const float lab[3]);
