@@ -57,6 +57,10 @@ class Settings(
 	var keepSegments: Boolean = true,
 	var presenceThreshold: Double = 0.5,
 	var provisionalFocal: Double = 1.0,
+	// the focal estimate is kept only within this share of the lens's own value (when the camera reports one): a phone
+	// session estimated 1239 px, the lens says 1004, earlier sessions 1037–1041 (one frame's estimate; its support
+	// curve is flat), and the fits on that session's frames cost less at 1004
+	var lensTolerance: Double = 0.12,
 )
 
 enum class Stage { FOCAL, ACQUIRE, FOLLOW }
@@ -169,6 +173,9 @@ class Pipeline(val settings: Settings = Settings()) {
 	}
 
 	// a known focal length (camera intrinsics) instead of estimating it
+	// the camera's own focal length for the current frame size (CameraSession, from Camera2): a check on the estimate
+	@Volatile var lensFx: Double? = null
+
 	fun useFocal(fx: Double) {
 		this.fx = fx
 		if (stage == Stage.FOCAL)
@@ -223,7 +230,13 @@ class Pipeline(val settings: Settings = Settings()) {
 				return snapshot(time, frame, probe, false, null, started)
 			val f = detector.estimateFocal(frame)
 			focal = f
-			if (f.ok && f.fx > 0) {
+			val lens = lensFx
+			if (f.ok && f.fx > 0 && lens != null && Math.abs(f.fx / lens - 1) > settings.lensTolerance) {
+				fx = lens
+				stage = Stage.ACQUIRE
+				event(String.format("focal estimate %.0f px is %.0f %% off the lens's %.0f px: the lens's taken", f.fx, 100 * (f.fx / lens - 1), lens), time)
+			}
+			else if (f.ok && f.fx > 0) {
 				fx = f.fx
 				stage = Stage.ACQUIRE
 				event(String.format("focal length %.0f px (%.2f × long side, support %.2f, %.0f ms)", f.fx, f.ratio, f.support, f.ms), time)

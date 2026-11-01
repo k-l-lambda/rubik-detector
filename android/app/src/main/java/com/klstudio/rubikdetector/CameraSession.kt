@@ -166,6 +166,7 @@ class CameraSession(private val context: Context) {
 			val rotation = image.imageInfo.rotationDegrees
 			val frame = det.setFrame(plane.buffer, image.width, image.height, plane.rowStride, rotation)
 			val cameraFx = intrinsics?.fx(maxOf(frame.width, frame.height))
+			pipeline.lensFx = cameraFx
 			if (useCameraFocal && cameraFx != null && pipeline.stage == Stage.FOCAL)
 				pipeline.useFocal(cameraFx)
 			val snapshot = pipeline.process(det, frame, timestamp / 1e9)
@@ -213,7 +214,8 @@ class CameraSession(private val context: Context) {
 		val now = System.nanoTime()
 		val processedFps = if (lastProcessed != 0L) 1e9 / (now - lastProcessed) else 0.0
 		lastProcessed = now
-		val cameraFx = hud?.let { intrinsics?.fx(maxOf(it.frame.width, it.frame.height)) }
+		// the long side is the same upright or not: known before any HUD (the focal stage needs it)
+		val cameraFx = intrinsics?.fx(maxOf(image.width, image.height))
 		if (dumpRequested) {
 			dumpRequested = false
 			// the frame the shown snapshot was detected on (seconds older than this one on a slow phone), so that the
@@ -255,6 +257,7 @@ class CameraSession(private val context: Context) {
 					if (!keep)
 						pipeline.fx = 0.0
 				}
+				pipeline.lensFx = stats.value.cameraFx
 				if (useCameraFocal && pipeline.stage == Stage.FOCAL)
 					stats.value.cameraFx?.let { pipeline.useFocal(it) }
 				val snapshot = coordinator.detectStep(det, index)
