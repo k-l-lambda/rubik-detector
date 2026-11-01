@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 runs/
 .pytest_cache/
+
+*.local
+*.local.*
