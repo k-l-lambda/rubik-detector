@@ -6,3 +6,8 @@ local.properties
 .idea/
 *.iml
 captures/
+# local command-line build (wrapper scripts are not committed, see README)
+gradlew
+gradlew.bat
+gradle/wrapper/gradle-wrapper.jar
+*.log
