@@ -247,7 +247,7 @@ fun main(args: Array<String>) {
 					snap.follow?.let { f -> if (f.moves.size > prevMoves && snap.stage.toString() == "FOLLOW") println(String.format("  %6.2f s turned %s%s", detectorFree, f.moves.last(), rightNow(f.state))) }
 					if (snap.stage.toString() == "ACQUIRE" && prevStage?.toString() == "FOLLOW")
 						println(String.format("  %6.2f s back to acquiring", detectorFree))
-					snap.events.lastOrNull()?.takeIf { it.contains("layer ") && it != lastDrop }?.let { lastDrop = it; println("  " + it) }
+					snap.events.lastOrNull()?.takeIf { (it.contains("layer ") || it.contains("re-placed")) && it != lastDrop }?.let { lastDrop = it; println("  " + it) }
 				}
 			}
 		}

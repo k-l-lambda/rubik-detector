@@ -61,6 +61,12 @@ class Settings(
 	// session estimated 1239 px, the lens says 1004, earlier sessions 1037–1041 (one frame's estimate; its support
 	// curve is flat), and the fits on that session's frames cost less at 1004
 	var lensTolerance: Double = 0.12,
+	// acquire: chains re-placed inside the solve (tools/placement_check.py: a step before the solve spoiled right chains
+	// when two were wrong, and costs a solve per chain): each chain's frames scored under the estimate's colour model at
+	// the 24 placements; the best, if better by placeTau per sample, taken; then solved again (at most placeRounds)
+	var placeTau: Double = 1.0,
+	var placeRounds: Int = 3,
+	var placeMinSamples: Int = 9,
 )
 
 enum class Stage { FOCAL, ACQUIRE, FOLLOW }
@@ -637,11 +643,12 @@ class Pipeline(val settings: Settings = Settings()) {
 			return
 		estimatedCount = frames.size
 		decideDrops(time)
-		keepMasks()
-		val covered = frames.indices.flatMap { v -> frames[v].samples.filterIndexed { i, s -> s.valid && frames[v].keep?.get(i) != false }
-			.map { Cube.perms[rotations[v]][it.facelet] } }.toSet().size
-		val e = Engine.estimate(frames, rotations.toIntArray(), legal = covered >= settings.legalFrom, partial = true, reliability = true,
-			groups = if (settings.reliabilitySeconds > 0) IntArray(frames.size) { frames[it].chain * 4096 + (frames[it].time / settings.reliabilitySeconds).toInt() % 4096 } else null)
+		var e = solve()
+		for (round in 0 until settings.placeRounds) {
+			if (!replaceWorstChain(e, time))
+				break
+			e = solve()
+		}
 		estimate = e
 		clusterGap = if (e.ok && e.legal) gapOf(e.state!!) else Double.NaN
 		// a cube's six colours are distinct: two letters of one colour (a finger read as a sticker, two colours merged)
@@ -662,6 +669,64 @@ class Pipeline(val settings: Settings = Settings()) {
 			stage = Stage.FOLLOW
 			event("locked ${e.state}", time)
 		}
+	}
+
+	// the consensus masks, then the state estimate over the evidence as placed
+	private fun solve(): Estimate {
+		keepMasks()
+		val covered = frames.indices.flatMap { v -> frames[v].samples.filterIndexed { i, s -> s.valid && frames[v].keep?.get(i) != false }
+			.map { Cube.perms[rotations[v]][it.facelet] } }.toSet().size
+		return Engine.estimate(frames, rotations.toIntArray(), legal = covered >= settings.legalFrom, partial = true, reliability = true,
+			groups = if (settings.reliabilitySeconds > 0) IntArray(frames.size) { frames[it].chain * 4096 + (frames[it].time / settings.reliabilitySeconds).toInt() % 4096 } else null)
+	}
+
+	// The chain whose frames the estimate's colour model explains best under another placement (by over placeTau per
+	// sample), re-placed: one scoring call per frame for all 24 (the state turned instead of the frame: scoring frame
+	// placement r against S_H, S_H[j] = S[perms[H][j]], is scoring placement H∘r against S), every valid sample (a
+	// misplaced chain's are mostly left out of the evidence by the consensus). True if one moved.
+	private fun replaceWorstChain(e: Estimate, time: Double): Boolean {
+		val state = e.state ?: return false
+		if (!e.ok)
+			return false
+		val turned = (0 until 24).joinToString("") { h -> String(CharArray(54) { j -> state[Cube.perms[h][j]] }) }
+		val costs = HashMap<Int, DoubleArray>()
+		val samples = HashMap<Int, Int>()
+		for (v in frames.indices) {
+			val n = frames[v].samples.count { it.valid }
+			if (n == 0)
+				continue
+			val c = Engine.scoreModel(e.model, frames[v], rotations[v], turned, all = true)
+			val sum = costs.getOrPut(frames[v].chain) { DoubleArray(24) }
+			for (h in 0 until 24)
+				sum[h] += c[h]
+			samples.merge(frames[v].chain, n, Int::plus)
+		}
+		var best: Triple<Double, Int, Int>? = null   // (gain per sample, chain, H)
+		for ((chain, c) in costs) {
+			val n = samples.getValue(chain)
+			if (n < settings.placeMinSamples)
+				continue
+			val h = c.indices.minByOrNull { c[it] }!!
+			val gain = (c[Cube.identity] - c[h]) / n
+			if (h != Cube.identity && gain > settings.placeTau && (best == null || gain > best.first))
+				best = Triple(gain, chain, h)
+		}
+		val (gain, chain, h) = best ?: return false
+		for (v in frames.indices)
+			if (frames[v].chain == chain) {
+				val placed = Cube.chain(h, rotations[v])
+				frames[v].rotation = placed
+				rotations[v] = placed
+				// a dropped facelet follows its frame's samples to their new place
+				frames[v].dropped?.let { d -> frames[v].dropped = BooleanArray(54).also { nd -> for (k in 0 until 54) if (d[k]) nd[Cube.perms[h][k]] = true } }
+			}
+		for (f in listOfNotNull(prev, lastGood))
+			if (f.chain == chain && f.rotation != null && frames.none { it === f })
+				f.rotation = Cube.chain(h, f.rotation!!)
+		carries[chain]?.let { (t, g) -> carries[chain] = Pair(t, Cube.chain(h, g)) }
+		stable.clear()
+		event(String.format("chain %d re-placed (%.1f per sample better)", chain, gain), time)
+		return true
 	}
 
 	// per colour letter the median observed colour, for drawing the followed state

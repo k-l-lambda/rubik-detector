@@ -33,10 +33,11 @@ class Detection(
 	var keep: BooleanArray? = null  // per sample whether it is evidence (null: all valid ones), set by the pipeline
 	var dropped: BooleanArray? = null   // per common facelet: dropped from this frame's evidence (its layer turned since)
 
-	// per sample (facelet, valid, L, a, b), as the estimate and scoring calls take them (a sample not kept: invalid)
-	fun packed(): DoubleArray {
+	// per sample (facelet, valid, L, a, b), as the estimate and scoring calls take them (a sample not kept: invalid;
+	// all: every valid one)
+	fun packed(all: Boolean = false): DoubleArray {
 		val out = DoubleArray(samples.size * 5)
-		val k = keep
+		val k = if (all) null else keep
 		samples.forEachIndexed { i, s ->
 			out[i * 5] = s.facelet.toDouble()
 			out[i * 5 + 1] = if (s.valid && (k == null || k[i])) 1.0 else 0.0
@@ -127,8 +128,9 @@ object Engine {
 			if (ok) String(CharArray(54) { Cube.FACES[colours[it]] }) else null, probability, confidence, observed, Model(mean, variance))
 	}
 
-	fun scoreModel(model: Model, view: Detection, rotation: Int, joinedStates: String): DoubleArray =
-		nativeScoreModel(model.mean, model.variance, view.packed(), rotation, joinedStates)
+	// all: every valid sample, not only those kept as evidence
+	fun scoreModel(model: Model, view: Detection, rotation: Int, joinedStates: String, all: Boolean = false): DoubleArray =
+		nativeScoreModel(model.mean, model.variance, view.packed(all), rotation, joinedStates)
 
 	fun conflicts(model: Model, view: Detection, rotation: Int, state: String, threshold: Double = 4.0): IntArray =
 		nativeConflicts(model.mean, model.variance, view.packed(), rotation, state, threshold)
