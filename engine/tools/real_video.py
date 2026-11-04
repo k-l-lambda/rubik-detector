@@ -5,7 +5,7 @@ timings; overlays for eyeballing.
 	python engine/tools/real_video.py FRAMES_DIR [--step 1] [--jobs 12] [--fx F] [--work-width 1024] [--out DIR]
 	                                   [--sheet N] [--extra key=value ...]
 
-FRAMES_DIR: frame0001.png … (e.g. ffmpeg -i VID.mp4 -vsync 0 DIR/frame%04d.png; ffmpeg applies the rotation tag).
+FRAMES_DIR: frame0001.png (or .jpg) … (e.g. ffmpeg -i VID.mp4 -vsync 0 DIR/frame%04d.png; ffmpeg applies the rotation tag).
 Writes OUT/results.json (per frame) and OUT/overlay/frameNNNN.jpg for every --sheet-th frame (sticker quads in their
 measured colour, white = cost ≤ 0.15, red otherwise; segments by axis family), OUT/sheet-*.jpg contact sheets.
 """
@@ -76,7 +76,8 @@ def main():
 	a = ap.parse_args()
 	effort = {k: float(v) for k, v in (x.split("=") for x in a.effort.split(",") if x)}
 	import rubik_engine as re
-	files = sorted(f for f in os.listdir(a.frames) if f.startswith("frame") and f.endswith(".png"))[::a.step]
+	files = sorted(f for f in os.listdir(a.frames) if f.startswith("frame") and f[-4:] in (".png", ".jpg"))[::a.step]
+	ext = files[0][-4:] if files else ".png"
 	out = a.out or os.path.join(a.frames, "eval")
 	os.makedirs(os.path.join(out, "overlay"), exist_ok=True)
 	fx = a.fx
@@ -92,7 +93,7 @@ def main():
 	print(f"{len(rows)} frames in {time.time() - t0:.0f} s")
 	for r in rows:
 		if "segments_list" in r:
-			img = cv2.imread(os.path.join(a.frames, f"frame{r['frame']:04d}.png"))
+			img = cv2.imread(os.path.join(a.frames, f"frame{r['frame']:04d}{ext}"))
 			o = overlay(img, {"ok": r["ok"], "samples": [dict(s, quad=np.array(s["quad"])) for s in r["samples"]], "segments": r.pop("segments_list")},
 				r["ok"] and r["cost"] <= a.good_cost)
 			cv2.putText(o, f"{r['frame']} cost {r['cost']:.3f} sup {r['support']:.2f}", (10, 40), 0, 1.1, (0, 255, 255), 3)
