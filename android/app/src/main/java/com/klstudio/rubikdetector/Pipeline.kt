@@ -39,9 +39,10 @@ class Settings(
 	// …the consensus: per facelet the chain medians, each chain's vote √(samples) capped at √consensusCap (a long hold
 	// outvoted every later view: a phone session kept the early colour against a sharp contradicting frame); a second
 	// colour with at least consensusContest of the first's votes keeps its samples too (contested: the evidence decides,
-	// at a lower confidence). consensusCap 0, consensusContest 2: as before (all of √samples, one colour)
+	// at a lower confidence; 0.5 kept too much: clean v104 at 400 ms then locked 8 s later). consensusCap 0,
+	// consensusContest 2: as before (all of √samples, one colour)
 	var consensusCap: Int = 4,
-	var consensusContest: Double = 0.5,
+	var consensusContest: Double = 0.75,
 	// acquire: at most this many reliability groups per chain (its blocks merged evenly beyond): a chain held for
 	// seconds counted as that many independent agreements against a later view. 0: no cap
 	var reliabilityCap: Int = 4,
