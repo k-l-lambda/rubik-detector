@@ -113,6 +113,8 @@ fun main(args: Array<String>) {
 	System.getenv("LOCK_COVERAGE")?.toIntOrNull()?.let { coord.pipeline.settings.lockCoverage = it }
 	System.getenv("LINK_DEG")?.toDoubleOrNull()?.let { coord.pipeline.settings.linkDeg = it }
 	System.getenv("LOCK_STABLE")?.toIntOrNull()?.let { coord.pipeline.settings.lockStable = it }
+	System.getenv("PLACE_OVERLAP")?.toDoubleOrNull()?.let { coord.pipeline.settings.placeOverlap = it }
+	System.getenv("PLACE_VERIFY")?.let { coord.pipeline.settings.placeVerify = it == "1" }
 	fxGiven?.let { coord.pipeline.useFocal(it) }
 	val detector = Detector()
 	var buffer: ByteBuffer? = null

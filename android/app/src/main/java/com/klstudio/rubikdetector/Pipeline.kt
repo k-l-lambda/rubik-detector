@@ -67,6 +67,11 @@ class Settings(
 	var placeTau: Double = 1.0,
 	var placeRounds: Int = 3,
 	var placeMinSamples: Int = 9,
+	// …and only a chain whose samples land mostly (this share) on facelets other chains observe where it is: a chain that
+	// alone sees a face contradicts only the estimate's completion there, which favoured moving it onto seen faces
+	// (v105: the first view of the sixth face re-placed wrong at once)
+	var placeOverlap: Double = 0.9,
+	var placeVerify: Boolean = true,   // …and the move confirmed by an estimate without the chain
 )
 
 enum class Stage { FOCAL, ACQUIRE, FOLLOW }
@@ -691,6 +696,28 @@ class Pipeline(val settings: Settings = Settings()) {
 		val turned = (0 until 24).joinToString("") { h -> String(CharArray(54) { j -> state[Cube.perms[h][j]] }) }
 		val costs = HashMap<Int, DoubleArray>()
 		val samples = HashMap<Int, Int>()
+		// per chain the common facelets the other chains' kept samples cover
+		val seenBy = HashMap<Int, HashSet<Int>>()
+		for (v in frames.indices)
+			frames[v].samples.forEachIndexed { i, smp ->
+				if (smp.valid && frames[v].keep?.get(i) != false)
+					seenBy.getOrPut(frames[v].chain) { HashSet() }.add(Cube.perms[rotations[v]][smp.facelet])
+			}
+		val overlap = { chain: Int ->
+			val others = HashSet<Int>()
+			seenBy.forEach { (c, set) -> if (c != chain) others.addAll(set) }
+			var n = 0
+			var inside = 0
+			for (v in frames.indices)
+				if (frames[v].chain == chain)
+					for (smp in frames[v].samples)
+						if (smp.valid) {
+							n++
+							if (Cube.perms[rotations[v]][smp.facelet] in others)
+								inside++
+						}
+			if (n == 0) 0.0 else inside.toDouble() / n
+		}
 		for (v in frames.indices) {
 			val n = frames[v].samples.count { it.valid }
 			if (n == 0)
@@ -701,17 +728,41 @@ class Pipeline(val settings: Settings = Settings()) {
 				sum[h] += c[h]
 			samples.merge(frames[v].chain, n, Int::plus)
 		}
-		var best: Triple<Double, Int, Int>? = null   // (gain per sample, chain, H)
+		// candidates by gain; the best one that a leave-one-out estimate (the chain's own evidence out: a misplaced chain
+		// elsewhere can pull the full model so that a right chain looks better moved — v105) confirms
+		val candidates = ArrayList<Triple<Double, Int, Int>>()   // (gain per sample, chain, H)
 		for ((chain, c) in costs) {
 			val n = samples.getValue(chain)
 			if (n < settings.placeMinSamples)
 				continue
 			val h = c.indices.minByOrNull { c[it] }!!
 			val gain = (c[Cube.identity] - c[h]) / n
-			if (h != Cube.identity && gain > settings.placeTau && (best == null || gain > best.first))
-				best = Triple(gain, chain, h)
+			if (h != Cube.identity && gain > settings.placeTau && overlap(chain) >= settings.placeOverlap)
+				candidates.add(Triple(gain, chain, h))
 		}
-		val (gain, chain, h) = best ?: return false
+		val confirmed = candidates.sortedByDescending { it.first }.take(2).firstOrNull { (_, chain, h) ->
+			if (!settings.placeVerify)
+				return@firstOrNull true
+			val rest = frames.indices.filter { frames[it].chain != chain }
+			val e2 = Engine.estimate(rest.map { frames[it] }, IntArray(rest.size) { rotations[rest[it]] }, legal = e.legal, partial = true, reliability = true,
+				groups = if (settings.reliabilitySeconds > 0) IntArray(rest.size) { frames[rest[it]].chain * 4096 + (frames[rest[it]].time / settings.reliabilitySeconds).toInt() % 4096 } else null)
+			val s2 = e2.state
+			if (!e2.ok || s2 == null)
+				return@firstOrNull false
+			val pair = String(CharArray(54) { j -> s2[j] }) + String(CharArray(54) { j -> s2[Cube.perms[h][j]] })
+			var c0 = 0.0
+			var c1 = 0.0
+			var n = 0
+			for (v in frames.indices)
+				if (frames[v].chain == chain) {
+					val sc = Engine.scoreModel(e2.model, frames[v], rotations[v], pair, all = true)
+					c0 += sc[0]
+					c1 += sc[1]
+					n += frames[v].samples.count { it.valid }
+				}
+			n > 0 && (c0 - c1) / n > settings.placeTau
+		}
+		val (gain, chain, h) = confirmed ?: return false
 		for (v in frames.indices)
 			if (frames[v].chain == chain) {
 				val placed = Cube.chain(h, rotations[v])
