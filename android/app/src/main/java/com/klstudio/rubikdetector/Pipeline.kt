@@ -36,6 +36,15 @@ class Settings(
 	var confirm: Int = 2,
 	var hintBonus: Double = 8.0,        // follow: nll off the turn prior of candidates turning the face the tracker saw turn
 	var consensusDelta: Double = 12.0,  // acquire: a sample further than this (Lab, L halved) from its facelet's consensus is left out
+	// …the consensus: per facelet the chain medians, each chain's vote √(samples) capped at √consensusCap (a long hold
+	// outvoted every later view: a phone session kept the early colour against a sharp contradicting frame); a second
+	// colour with at least consensusContest of the first's votes keeps its samples too (contested: the evidence decides,
+	// at a lower confidence). consensusCap 0, consensusContest 2: as before (all of √samples, one colour)
+	var consensusCap: Int = 4,
+	var consensusContest: Double = 0.5,
+	// acquire: at most this many reliability groups per chain (its blocks merged evenly beyond): a chain held for
+	// seconds counted as that many independent agreements against a later view. 0: no cap
+	var reliabilityCap: Int = 4,
 	// acquire: the unknown reliability per block of a chain (its frames within reliabilitySeconds stand or fall together:
 	// consecutive frames of one hold share a finger, a reflection; 0 = per frame, which is overconfident: on a real video
 	// confidence 0.998 for a state with two colours merged; a whole chain or 1 s blocks are too strict: no lock on v103;
@@ -436,7 +445,11 @@ class Pipeline(val settings: Settings = Settings()) {
 
 	// --- acquire ---------------------------------------------------------------------------------------------------
 
+	// host checks: a detection's samples altered before they become evidence (planted wrong colours)
+	var evidenceHook: ((Detection) -> Unit)? = null
+
 	private fun addEvidence(r: Detection) {
+		evidenceHook?.invoke(r)
 		val rot = r.rotation
 		if (rot != null) {
 			frames.add(r)
@@ -616,6 +629,9 @@ class Pipeline(val settings: Settings = Settings()) {
 
 	// per sample whether it is evidence: not on a dropped facelet, and within consensusDelta of its facelet's consensus
 	// colour — per facelet the chain medians, the one with the most (√size-weighted) others within the delta
+	var contested = 0                    // facelets the last consensus kept two colours for (debug text)
+		private set
+
 	private fun keepMasks() {
 		val f = { lab: FloatArray -> doubleArrayOf(lab[0] * 0.5, lab[1].toDouble(), lab[2].toDouble()) }
 		val dist = { a: DoubleArray, b: DoubleArray -> Math.sqrt((0 until 3).sumOf { (a[it] - b[it]) * (a[it] - b[it]) }) }
@@ -626,19 +642,50 @@ class Pipeline(val settings: Settings = Settings()) {
 				if (s.valid && frames[v].dropped?.get(k) != true)
 					byFacelet.getOrPut(k) { HashMap() }.getOrPut(frames[v].chain) { ArrayList() }.add(f(s.lab))
 			}
-		val mode = HashMap<Int, DoubleArray>()
+		// per facelet the colours kept: the most supported chain median, and a far one with enough votes of its own
+		val modes = HashMap<Int, List<DoubleArray>>()
+		var two = 0
 		for ((k, chains) in byFacelet) {
 			val meds = chains.values.map { list -> DoubleArray(3) { c -> list.map { it[c] }.sorted()[list.size / 2] } }
-			val w = chains.values.map { Math.sqrt(it.size.toDouble()) }
-			mode[k] = meds[meds.indices.maxByOrNull { a -> meds.indices.sumOf { b -> if (dist(meds[a], meds[b]) < settings.consensusDelta) w[b] else 0.0 } }!!]
+			val w = chains.values.map { Math.sqrt(if (settings.consensusCap > 0) minOf(it.size, settings.consensusCap).toDouble() else it.size.toDouble()) }
+			val support = meds.indices.map { a -> meds.indices.sumOf { b -> if (dist(meds[a], meds[b]) < settings.consensusDelta) w[b] else 0.0 } }
+			val first = support.indices.maxByOrNull { support[it] }!!
+			val rival = support.indices.filter { dist(meds[it], meds[first]) >= 2 * settings.consensusDelta }.maxByOrNull { support[it] }
+			modes[k] = if (rival != null && support[rival] >= settings.consensusContest * support[first]) {
+				two++
+				listOf(meds[first], meds[rival])
+			}
+			else
+				listOf(meds[first])
 		}
+		contested = two
 		for (v in frames.indices) {
 			val fr = frames[v]
 			fr.keep = BooleanArray(fr.samples.size) { i ->
 				val s = fr.samples[i]
 				val k = Cube.perms[rotations[v]][s.facelet]
-				s.valid && fr.dropped?.get(k) != true && mode[k]?.let { dist(f(s.lab), it) < settings.consensusDelta } ?: false
+				s.valid && fr.dropped?.get(k) != true && modes[k]?.any { dist(f(s.lab), it) < settings.consensusDelta } ?: false
 			}
+		}
+	}
+
+	// reliability groups of the frames `idx` (frames' indices): per chain its reliabilitySeconds blocks, merged evenly into
+	// at most reliabilityCap groups
+	private fun groupsOf(idx: List<Int>): IntArray? {
+		if (settings.reliabilitySeconds <= 0)
+			return null
+		val block = { v: Int -> (frames[v].time / settings.reliabilitySeconds).toInt() }
+		val span = HashMap<Int, Pair<Int, Int>>()
+		for (v in idx) {
+			val b = block(v)
+			span[frames[v].chain] = span[frames[v].chain]?.let { (lo, hi) -> Pair(minOf(lo, b), maxOf(hi, b)) } ?: Pair(b, b)
+		}
+		return IntArray(idx.size) { n ->
+			val v = idx[n]
+			val (lo, hi) = span.getValue(frames[v].chain)
+			val blocks = hi - lo + 1
+			val g = if (settings.reliabilityCap > 0 && blocks > settings.reliabilityCap) (block(v) - lo) * settings.reliabilityCap / blocks else block(v) - lo
+			frames[v].chain * 4096 + g % 4096
 		}
 	}
 
@@ -682,7 +729,7 @@ class Pipeline(val settings: Settings = Settings()) {
 		val covered = frames.indices.flatMap { v -> frames[v].samples.filterIndexed { i, s -> s.valid && frames[v].keep?.get(i) != false }
 			.map { Cube.perms[rotations[v]][it.facelet] } }.toSet().size
 		return Engine.estimate(frames, rotations.toIntArray(), legal = covered >= settings.legalFrom, partial = true, reliability = true,
-			groups = if (settings.reliabilitySeconds > 0) IntArray(frames.size) { frames[it].chain * 4096 + (frames[it].time / settings.reliabilitySeconds).toInt() % 4096 } else null)
+			groups = groupsOf(frames.indices.toList()))
 	}
 
 	// The chain whose frames the estimate's colour model explains best under another placement (by over placeTau per
@@ -745,7 +792,7 @@ class Pipeline(val settings: Settings = Settings()) {
 				return@firstOrNull true
 			val rest = frames.indices.filter { frames[it].chain != chain }
 			val e2 = Engine.estimate(rest.map { frames[it] }, IntArray(rest.size) { rotations[rest[it]] }, legal = e.legal, partial = true, reliability = true,
-				groups = if (settings.reliabilitySeconds > 0) IntArray(rest.size) { frames[rest[it]].chain * 4096 + (frames[rest[it]].time / settings.reliabilitySeconds).toInt() % 4096 } else null)
+				groups = groupsOf(rest))
 			val s2 = e2.state
 			if (!e2.ok || s2 == null)
 				return@firstOrNull false

@@ -115,6 +115,45 @@ fun main(args: Array<String>) {
 	System.getenv("LOCK_STABLE")?.toIntOrNull()?.let { coord.pipeline.settings.lockStable = it }
 	System.getenv("PLACE_OVERLAP")?.toDoubleOrNull()?.let { coord.pipeline.settings.placeOverlap = it }
 	System.getenv("PLACE_VERIFY")?.let { coord.pipeline.settings.placeVerify = it == "1" }
+	System.getenv("CONSENSUS_CAP")?.toIntOrNull()?.let { coord.pipeline.settings.consensusCap = it }
+	System.getenv("CONSENSUS_CONTEST")?.toDoubleOrNull()?.let { coord.pipeline.settings.consensusContest = it }
+	System.getenv("RELIABILITY_CAP")?.toIntOrNull()?.let { coord.pipeline.settings.reliabilityCap = it }
+	// PLANT=seconds: wrong evidence planted until then — on the face the first evidence frame sees nearest the camera,
+	// its 8 outer stickers (true positions, followed through the cube's turns) read as another visible centre's colour
+	// (a finger, a glare, a misread), the same wrong colour each time; after it, the stickers as they are. Can the later
+	// right views overturn it?
+	System.getenv("PLANT")?.toDoubleOrNull()?.let { until ->
+		val text = labelFile.readText()
+		val truthViews = parseViews(text)
+		var planted: Set<Int>? = null   // truth facelets
+		var plantedFrames = 0
+		coord.pipeline.evidenceHook = { r ->
+			val fi = Math.round(r.time * fps).toInt().coerceIn(0, truthViews.size - 1)
+			if (r.time <= until) {
+				val (_, g) = Cube.frameMatch(r.R, truthViews[fi])
+				val inv = IntArray(54)
+				Cube.perms[g].forEachIndexed { a2, b2 -> inv[b2] = a2 }
+				// view facelet j is truth facelet inv[j]
+				if (planted == null) {
+					val face = listOf(9, 27, 45).maxByOrNull { base -> r.samples.count { it.valid && it.facelet in base until base + 9 } }!!
+					planted = (face until face + 9).filter { it != face + 4 }.map { inv[it] }.toSet()
+					println("  planting wrong colours on truth facelets ${planted!!.sorted()} until $until s")
+				}
+				val centres = r.samples.filter { it.valid && it.facelet % 9 == 4 }
+				var any = false
+				for (smp in r.samples) {
+					if (!smp.valid || inv[smp.facelet] !in planted!!)
+						continue
+					val other = centres.firstOrNull { it.facelet / 9 != smp.facelet / 9 } ?: continue
+					other.lab.copyInto(smp.lab)
+					any = true
+				}
+				if (any)
+					plantedFrames++
+			}
+		}
+		Runtime.getRuntime().addShutdownHook(Thread { println("  planted on $plantedFrames evidence frames") })
+	}
 	fxGiven?.let { coord.pipeline.useFocal(it) }
 	val detector = Detector()
 	var buffer: ByteBuffer? = null
